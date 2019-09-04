@@ -13,3 +13,6 @@ criterion = "0.3"
 [[bench]]
 name = "vec"
 harness = false
+
+[profile.release]
+debug = true
