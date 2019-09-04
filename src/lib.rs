@@ -48,6 +48,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
         })
     }
 
+    // TODO take an iterator instead of a vec.
     pub fn from(width: u32, mut items: Vec<Ipld>) -> Result<Self> {
         let mut dag = Dag::new(Default::default());
         let width = width as usize;
@@ -296,14 +297,12 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use libipld::{format_err, BlockStore, DefaultPrefix};
+pub mod mock {
+    use libipld::{format_err, BlockStore, Cid, Result};
     use std::collections::HashMap;
 
     #[derive(Default)]
-    struct Store(HashMap<String, Box<[u8]>>);
+    pub struct Store(HashMap<String, Box<[u8]>>);
 
     impl BlockStore for Store {
         unsafe fn read(&self, cid: &Cid) -> Result<Box<[u8]>> {
@@ -324,6 +323,12 @@ mod tests {
             Ok(())
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libipld::DefaultPrefix;
 
     fn int(i: usize) -> Option<Ipld> {
         Some(Ipld::Integer(i as i128))
@@ -331,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_vector() -> Result<()> {
-        let mut vec = Vector::<DefaultPrefix, Store>::new(3)?;
+        let mut vec = Vector::<DefaultPrefix, mock::Store>::new(3)?;
         for i in 0..13 {
             assert_eq!(vec.get(i)?, None);
             assert_eq!(vec.len()?, i);
@@ -354,7 +359,7 @@ mod tests {
     #[test]
     fn test_from() -> Result<()> {
         let data: Vec<Ipld> = (0..13).map(|i| Ipld::Integer(i as i128)).collect();
-        let vec = Vector::<DefaultPrefix, Store>::from(3, data.clone())?;
+        let vec = Vector::<DefaultPrefix, mock::Store>::from(3, data.clone())?;
         let data2: Vec<Ipld> = vec.iter().map(|ipld| ipld.unwrap()).collect();
         assert_eq!(data, data2);
         Ok(())
