@@ -19,11 +19,11 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
     }
 
     fn get_node(&self, cid: &Cid) -> Result<Node> {
-        Ok(Node(self.dag.get(&cid.into())?))
+        Ok(Node(self.dag.get_block(cid)?))
     }
 
     fn put_node(&mut self, node: &Node) -> Result<Cid> {
-        Ok(self.dag.put::<TPrefix>(&node.0)?)
+        Ok(self.dag.put_block::<TPrefix>(&node.0)?)
     }
 }
 
@@ -40,7 +40,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
     pub fn new(width: u32) -> Result<Self> {
         let mut dag = Dag::new(Default::default());
         let node = Self::create_node(width as usize, 0, vec![]);
-        let root = dag.put::<TPrefix>(&node.0)?;
+        let root = dag.put_block::<TPrefix>(&node.0)?;
         Ok(Self {
             prefix: PhantomData,
             dag,
@@ -69,7 +69,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
                     data.push(items[i].clone());
                 }
                 let node = Self::create_node(width, height, data);
-                let cid = dag.put::<TPrefix>(&node.0)?;
+                let cid = dag.put_block::<TPrefix>(&node.0)?;
                 nodes.push(Ipld::Link(cid));
             }
             if node_count == 1 {
@@ -171,8 +171,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
                     return Ok(Some(ipld.to_owned()));
                 }
                 if let Some(cid) = ipld.as_link() {
-                    let ipld = self.dag.get(&cid.into())?;
-                    node = Node(ipld);
+                    node = self.get_node(cid)?;
                     node_ref = &node;
                     index %= width.pow(height);
                     height = node.height()?;
