@@ -1,6 +1,6 @@
 use core::convert::TryFrom;
 use core::marker::PhantomData;
-use libipld::{ipld, Cid, Dag, Ipld, IpldGet, IpldGetMut, IpldStore, Prefix, Result, format_err};
+use libipld::{format_err, ipld, Cid, Dag, Ipld, IpldGet, IpldGetMut, IpldStore, Prefix, Result};
 
 #[derive(Debug)]
 pub struct Vector<TPrefix: Prefix, TStore: IpldStore> {
@@ -21,7 +21,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
     fn get_node(&self, cid: &Cid) -> Result<Node> {
         Ok(Node(self.dag.get(&cid.into())?))
     }
-    
+
     fn put_node(&mut self, node: &Node) -> Result<Cid> {
         Ok(self.dag.put::<TPrefix>(&node.0)?)
     }
@@ -48,17 +48,44 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
         })
     }
 
-    pub fn from<T: Into<Ipld>>(width: u32, items: Vec<T>) -> Result<Self> {
-        // TODO make more efficient
-        let mut vec = Self::new(width)?;
-        for item in items.into_iter() {
-            vec.push(item.into())?;
+    pub fn from(width: u32, mut items: Vec<Ipld>) -> Result<Self> {
+        let mut dag = Dag::new(Default::default());
+        let width = width as usize;
+        let mut height = 0;
+
+        loop {
+            let mut node_count = items.len() / width;
+            if items.len() % width != 0 {
+                node_count += 1;
+            }
+
+            let mut nodes = Vec::with_capacity(node_count);
+            for i in 0..node_count {
+                let start = i * width;
+                let end = (i + 1) * width;
+                let end = core::cmp::min(end, items.len());
+                let mut data = Vec::with_capacity(width);
+                for i in start..end {
+                    data.push(items[i].clone());
+                }
+                let node = Self::create_node(width, height, data);
+                let cid = dag.put::<TPrefix>(&node.0)?;
+                nodes.push(Ipld::Link(cid));
+            }
+            if node_count == 1 {
+                let root = nodes[0].as_link().unwrap().to_owned();
+                return Ok(Self {
+                    prefix: PhantomData,
+                    dag,
+                    root,
+                });
+            } else {
+                items = nodes;
+                height += 1;
+            }
         }
-        Ok(vec)
     }
 
-
-    
     pub fn push(&mut self, mut value: Ipld) -> Result<()> {
         let root = self.get_node(&self.root)?;
         let width = root.width()?;
@@ -68,7 +95,8 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
         chain.push(root);
 
         while height > 0 {
-            let cid = chain.last()
+            let cid = chain
+                .last()
                 .unwrap()
                 .data()?
                 .last()
@@ -79,7 +107,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
             height = node.height()?;
             chain.push(node);
         }
-        
+
         let mut mutated = false;
         for mut node in chain.into_iter().rev() {
             if mutated {
@@ -100,7 +128,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
                 }
             }
         }
-        
+
         if !mutated {
             let height = root_height + 1;
             let node = Self::create_node(width, height, vec![(&self.root).into(), value]);
@@ -117,6 +145,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
     }
 
     pub fn pop(&mut self) -> Result<Option<Ipld>> {
+        // TODO
         /*let root = self.get_node(&self.root)?;
         let width = root.width()?;
         let root_height = root.height()?;
@@ -157,6 +186,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
     }
 
     pub fn set(&mut self, _index: usize, _value: Ipld) -> Result<()> {
+        // TODO
         Ok(())
     }
 
@@ -177,9 +207,6 @@ impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
             height = node.height()?;
         }
     }
-
-    pub fn iter(&self) {
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -188,7 +215,9 @@ struct Node(Ipld);
 impl Node {
     #[allow(unused)]
     fn width(&self) -> Result<usize> {
-        let width = self.0.get("width")
+        let width = self
+            .0
+            .get("width")
             .map(|ipld| ipld.as_int())
             .unwrap()
             .map(|int| usize::try_from(*int).ok())
@@ -199,9 +228,11 @@ impl Node {
             Err(format_err!("invalid width"))
         }
     }
-    
+
     fn height(&self) -> Result<u32> {
-        let height = self.0.get("height")
+        let height = self
+            .0
+            .get("height")
             .map(|ipld| ipld.as_int())
             .unwrap()
             .map(|int| u32::try_from(*int).ok())
@@ -214,9 +245,7 @@ impl Node {
     }
 
     fn data(&self) -> Result<&Vec<Ipld>> {
-        let data = self.0.get("data")
-            .map(|ipld| ipld.as_list())
-            .unwrap();
+        let data = self.0.get("data").map(|ipld| ipld.as_list()).unwrap();
         if let Some(data) = data {
             Ok(data)
         } else {
@@ -225,7 +254,9 @@ impl Node {
     }
 
     fn data_mut(&mut self) -> Result<&mut Vec<Ipld>> {
-        let data = self.0.get_mut("data")
+        let data = self
+            .0
+            .get_mut("data")
             .map(|ipld| ipld.as_list_mut())
             .unwrap();
         if let Some(data) = data {
@@ -236,10 +267,40 @@ impl Node {
     }
 }
 
+// TODO: make more efficient
+pub struct Iter<'a, TPrefix: Prefix, TStore: IpldStore> {
+    vector: &'a Vector<TPrefix, TStore>,
+    index: usize,
+}
+
+impl<'a, TPrefix: Prefix, TStore: IpldStore> Iterator for Iter<'a, TPrefix, TStore> {
+    type Item = Result<Ipld>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.vector.get(self.index) {
+            Ok(Some(ipld)) => {
+                self.index += 1;
+                Some(Ok(ipld))
+            }
+            Ok(None) => None,
+            Err(err) => Some(Err(err)),
+        }
+    }
+}
+
+impl<TPrefix: Prefix, TStore: IpldStore> Vector<TPrefix, TStore> {
+    pub fn iter<'a>(&'a self) -> Iter<'a, TPrefix, TStore> {
+        Iter {
+            vector: self,
+            index: 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libipld::{BlockStore, DefaultPrefix, format_err};
+    use libipld::{format_err, BlockStore, DefaultPrefix};
     use std::collections::HashMap;
 
     #[derive(Default)]
@@ -268,7 +329,7 @@ mod tests {
     fn int(i: usize) -> Option<Ipld> {
         Some(Ipld::Integer(i as i128))
     }
-    
+
     #[test]
     fn test_vector() -> Result<()> {
         let mut vec = Vector::<DefaultPrefix, Store>::new(3)?;
@@ -288,6 +349,15 @@ mod tests {
             assert_eq!(vec.len()?, i + 1);
             assert_eq!(vec.pop()?, int(i));
         }*/
+        Ok(())
+    }
+
+    #[test]
+    fn test_from() -> Result<()> {
+        let data: Vec<Ipld> = (0..13).map(|i| Ipld::Integer(i as i128)).collect();
+        let vec = Vector::<DefaultPrefix, Store>::from(3, data.clone())?;
+        let data2: Vec<Ipld> = vec.iter().map(|ipld| ipld.unwrap()).collect();
+        assert_eq!(data, data2);
         Ok(())
     }
 }
