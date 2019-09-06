@@ -1,6 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use ipld_vec::{mock::Store, Vector};
-use libipld::{Ipld, Prefix};
+use ipld_collections::{Ipld, List, Prefix, mock::MemStore};
 
 struct Default;
 impl Prefix for Default {
@@ -20,9 +19,9 @@ impl Prefix for Sha2 {
     type Hash = libipld::Sha2_256;
 }
 
-type DefaultVec = Vector<Default, Store>;
-type JsonVec = Vector<Json, Store>;
-type Sha2Vec = Vector<Sha2, Store>;
+type DefaultList = List<Default, MemStore>;
+type JsonList = List<Json, MemStore>;
+type Sha2List = List<Sha2, MemStore>;
 
 fn baseline(c: &mut Criterion) {
     c.bench_function("Create Vec 1024xi128. size: 1024 * 16", |b| {
@@ -44,7 +43,7 @@ fn from(c: &mut Criterion) {
 
     c.bench_function("from: 1024xi128; n: 4; width: 256; size: 4096", |b| {
         b.iter(|| {
-            let vec = DefaultVec::from(256, data.clone()).unwrap();
+            let vec = DefaultList::from(256, data.clone()).unwrap();
             black_box(vec);
         })
     });
@@ -55,11 +54,11 @@ fn push(c: &mut Criterion) {
         "default push: 1024xi128; n: 4; width: 256; size: 4096",
         |b| {
             b.iter(|| {
-                let mut vec = DefaultVec::new(256).unwrap();
+                let mut list = DefaultList::new(256).unwrap();
                 for i in 0..1024 {
-                    vec.push(Ipld::Integer(i as i128)).unwrap();
+                    list.push(Ipld::Integer(i as i128)).unwrap();
                 }
-                black_box(vec);
+                black_box(list);
             })
         },
     );
@@ -68,11 +67,11 @@ fn push(c: &mut Criterion) {
 fn push_json(c: &mut Criterion) {
     c.bench_function("json push: 1024xi128; n: 4; width: 256; size: 4096", |b| {
         b.iter(|| {
-            let mut vec = JsonVec::new(256).unwrap();
+            let mut list = JsonList::new(256).unwrap();
             for i in 0..1024 {
-                vec.push(Ipld::Integer(i as i128)).unwrap();
+                list.push(Ipld::Integer(i as i128)).unwrap();
             }
-            black_box(vec);
+            black_box(list);
         })
     });
 }
@@ -80,11 +79,11 @@ fn push_json(c: &mut Criterion) {
 fn push_sha2(c: &mut Criterion) {
     c.bench_function("sha2 push: 1024xi128; n: 4; width: 256; size: 4096", |b| {
         b.iter(|| {
-            let mut vec = Sha2Vec::new(256).unwrap();
+            let mut list = Sha2List::new(256).unwrap();
             for i in 0..1024 {
-                vec.push(Ipld::Integer(i as i128)).unwrap();
+                list.push(Ipld::Integer(i as i128)).unwrap();
             }
-            black_box(vec);
+            black_box(list);
         })
     });
 }

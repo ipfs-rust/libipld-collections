@@ -328,7 +328,7 @@ version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
-name = "ipld-vec"
+name = "ipld-collections"
 version = "0.1.0"
 dependencies = [
  "criterion 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",

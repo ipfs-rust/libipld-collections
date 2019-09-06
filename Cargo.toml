@@ -1,5 +1,5 @@
 [package]
-name = "ipld-vec"
+name = "ipld-collections"
 version = "0.1.0"
 authors = ["David Craven <david@craven.ch>"]
 edition = "2018"
@@ -11,7 +11,11 @@ libipld = { path = "../rust-ipld" }
 criterion = "0.3"
 
 [[bench]]
-name = "vec"
+name = "list"
+harness = false
+
+[[bench]]
+name = "map"
 harness = false
 
 [profile.release]
