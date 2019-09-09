@@ -1,5 +1,5 @@
 use criterion::black_box;
-use ipld_collections::{DefaultPrefix, List, Ipld, mock::MemStore};
+use ipld_collections::{mock::MemStore, DefaultPrefix, Ipld, List};
 
 fn main() {
     // push: 1024xi128; n: 4; width: 256; size: 4096

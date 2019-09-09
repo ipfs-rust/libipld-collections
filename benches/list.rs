@@ -1,16 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use ipld_collections::{Ipld, List, Prefix, mock::MemStore};
+use ipld_collections::{mock::MemStore, Ipld, List, Prefix};
 
 struct Default;
 impl Prefix for Default {
     type Codec = libipld::DagCbor;
     type Hash = libipld::Blake2s;
-}
-
-struct Json;
-impl Prefix for Json {
-    type Codec = libipld::DagJson;
-    type Hash = libipld::Blake2b;
 }
 
 struct Sha2;
@@ -20,7 +14,6 @@ impl Prefix for Sha2 {
 }
 
 type DefaultList = List<Default, MemStore>;
-type JsonList = List<Json, MemStore>;
 type Sha2List = List<Sha2, MemStore>;
 
 fn baseline(c: &mut Criterion) {
@@ -64,18 +57,6 @@ fn push(c: &mut Criterion) {
     );
 }
 
-fn push_json(c: &mut Criterion) {
-    c.bench_function("json push: 1024xi128; n: 4; width: 256; size: 4096", |b| {
-        b.iter(|| {
-            let mut list = JsonList::new(256).unwrap();
-            for i in 0..1024 {
-                list.push(Ipld::Integer(i as i128)).unwrap();
-            }
-            black_box(list);
-        })
-    });
-}
-
 fn push_sha2(c: &mut Criterion) {
     c.bench_function("sha2 push: 1024xi128; n: 4; width: 256; size: 4096", |b| {
         b.iter(|| {
@@ -91,7 +72,7 @@ fn push_sha2(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(10);
-    targets = baseline, from, push, push_json, push_sha2
+    targets = baseline, from, push, push_sha2
 }
 
 criterion_main!(benches);
