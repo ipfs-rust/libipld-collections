@@ -96,16 +96,16 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                 let data = node.data_mut();
                 data.pop();
                 data.push(value);
-                value = self.store.write::<TPrefix, _>(&node)?.into();
+                value = Ipld::Link(self.store.write::<TPrefix, _>(&node)?);
             } else {
                 let data = node.data_mut();
                 if data.len() < width {
                     data.push(value);
-                    value = self.store.write::<TPrefix, _>(&node)?.into();
+                    value = Ipld::Link(self.store.write::<TPrefix, _>(&node)?);
                     mutated = true;
                 } else {
                     let node = Node::new(width as u32, node.height(), vec![value]);
-                    value = self.store.write::<TPrefix, _>(&node)?.into();
+                    value = Ipld::Link(self.store.write::<TPrefix, _>(&node)?);
                     mutated = false;
                 }
             }
@@ -113,7 +113,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
 
         if !mutated {
             let height = root_height + 1;
-            let node = Node::new(width as u32, height, vec![(&self.root).into(), value]);
+            let node = Node::new(width as u32, height, vec![Ipld::Link(self.root.clone()), value]);
             self.root = self.store.write::<TPrefix, _>(&node)?;
         } else {
             self.root = ipld_cid(value)?;
@@ -277,7 +277,7 @@ mod tests {
         for i in 0..13 {
             assert_eq!(list.get(i)?, None);
             assert_eq!(list.len()?, i);
-            list.push((i as i128).into())?;
+            list.push(Ipld::Integer(i as i128))?;
             for j in 0..i {
                 assert_eq!(list.get(j)?, int(j));
             }
