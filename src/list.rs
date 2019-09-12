@@ -1,51 +1,38 @@
 use core::marker::PhantomData;
 use ipld_derive::Ipld;
-use libipld::{Cid, Dag, Ipld, IpldError, IpldStore, Prefix, Result};
+use libipld::{Cid, Ipld, IpldError, IpldStore, Prefix, Result};
 
 #[derive(Debug)]
 pub struct List<TPrefix: Prefix, TStore: IpldStore> {
     prefix: PhantomData<TPrefix>,
-    dag: Dag<TStore>,
+    store: TStore,
     root: Cid,
 }
 
 impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
-    fn get_node(&self, cid: &Cid) -> Result<Node> {
-        let block = self.dag.get_block(cid)?;
-        let node = Node::from_ipld(block)?;
-        Ok(node)
-    }
-
-    fn put_node(&mut self, node: &Node) -> Result<Cid> {
-        let block = node.to_ipld();
-        Ok(self.dag.put_block::<TPrefix>(block)?)
-    }
-}
-
-impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
     pub fn load(root: Cid) -> Self {
-        let dag = Dag::new(Default::default());
+        let store: TStore = Default::default();
         Self {
             prefix: PhantomData,
-            dag,
+            store,
             root,
         }
     }
 
     pub fn new(width: u32) -> Result<Self> {
-        let mut dag = Dag::new(Default::default());
+        let mut store: TStore = Default::default();
         let node = Node::new(width, 0, vec![]);
-        let root = dag.put_block::<TPrefix>(node.to_ipld())?;
+        let root = store.write::<TPrefix, _>(&node)?;
         Ok(Self {
             prefix: PhantomData,
-            dag,
+            store,
             root,
         })
     }
 
     // TODO take an iterator instead of a vec.
     pub fn from(width: u32, mut items: Vec<Ipld>) -> Result<Self> {
-        let mut dag = Dag::new(Default::default());
+        let mut store: TStore = Default::default();
         let width = width as usize;
         let mut height = 0;
 
@@ -65,14 +52,14 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                     data.push(items[i].clone());
                 }
                 let node = Node::new(width as u32, height, data);
-                let cid = dag.put_block::<TPrefix>(node.to_ipld())?;
+                let cid = store.write::<TPrefix, _>(&node)?;
                 nodes.push(Ipld::Link(cid));
             }
             if node_count == 1 {
                 let root = ipld_cid_ref(&nodes[0])?.to_owned();
                 return Ok(Self {
                     prefix: PhantomData,
-                    dag,
+                    store,
                     root,
                 });
             } else {
@@ -83,7 +70,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
     }
 
     pub fn push(&mut self, mut value: Ipld) -> Result<()> {
-        let root = self.get_node(&self.root)?;
+        let root = self.store.read::<Node>(&self.root)?;
         let width = root.width();
         let root_height = root.height();
         let mut height = root_height;
@@ -98,7 +85,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                 .last()
                 .expect("at least one link");
             let cid = ipld_cid_ref(link)?;
-            let node = self.get_node(cid)?;
+            let node = self.store.read::<Node>(cid)?;
             height = node.height();
             chain.push(node);
         }
@@ -109,16 +96,16 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                 let data = node.data_mut();
                 data.pop();
                 data.push(value);
-                value = self.put_node(&node)?.into();
+                value = self.store.write::<TPrefix, _>(&node)?.into();
             } else {
                 let data = node.data_mut();
                 if data.len() < width {
                     data.push(value);
-                    value = self.put_node(&node)?.into();
+                    value = self.store.write::<TPrefix, _>(&node)?.into();
                     mutated = true;
                 } else {
                     let node = Node::new(width as u32, node.height(), vec![value]);
-                    value = self.put_node(&node)?.into();
+                    value = self.store.write::<TPrefix, _>(&node)?.into();
                     mutated = false;
                 }
             }
@@ -127,7 +114,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
         if !mutated {
             let height = root_height + 1;
             let node = Node::new(width as u32, height, vec![(&self.root).into(), value]);
-            self.root = self.put_node(&node)?;
+            self.root = self.store.write::<TPrefix, _>(&node)?;
         } else {
             self.root = ipld_cid(value)?;
         }
@@ -145,7 +132,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
     }
 
     pub fn get(&self, mut index: usize) -> Result<Option<Ipld>> {
-        let root = self.get_node(&self.root)?;
+        let root = self.store.read::<Node>(&self.root)?;
         let width = root.width();
         let mut height = root.height();
         let mut node;
@@ -162,7 +149,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                     return Ok(Some(ipld.to_owned()));
                 }
                 let cid = ipld_cid_ref(ipld)?;
-                node = self.get_node(cid)?;
+                node = self.store.read::<Node>(cid)?;
                 node_ref = &node;
                 index %= width.pow(height);
                 height = node.height();
@@ -178,7 +165,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
     }
 
     pub fn len(&self) -> Result<usize> {
-        let root = self.get_node(&self.root)?;
+        let root = self.store.read::<Node>(&self.root)?;
         let width = root.width();
         let mut height = root.height();
         let mut size = width.pow(height + 1);
@@ -190,7 +177,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                 return Ok(size);
             }
             let cid = ipld_cid_ref(data.last().unwrap())?;
-            node = self.get_node(cid)?;
+            node = self.store.read::<Node>(cid)?;
             height = node.height();
         }
     }
