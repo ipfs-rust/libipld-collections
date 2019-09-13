@@ -1,20 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use ipld_collections::{mock::MemStore, Ipld, List, Prefix};
+use ipld_collections::{mock::MemStore, Ipld, List};
 
-struct Default;
-impl Prefix for Default {
-    type Codec = libipld::DagCbor;
-    type Hash = libipld::Blake2s;
-}
-
-struct Sha2;
-impl Prefix for Sha2 {
-    type Codec = libipld::DagCbor;
-    type Hash = libipld::Sha2_256;
-}
-
-type DefaultList = List<Default, MemStore>;
-type Sha2List = List<Sha2, MemStore>;
+type DefaultList = List<libipld::Blake2b, MemStore>;
+type Sha2List = List<libipld::Sha2_256, MemStore>;
 
 fn baseline(c: &mut Criterion) {
     c.bench_function("Create Vec 1024xi128. size: 1024 * 16", |b| {

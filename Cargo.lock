@@ -261,6 +261,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dag-cbor-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quote 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "syn 1.0.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "synstructure 0.12.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "digest"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -356,18 +366,8 @@ name = "ipld-collections"
 version = "0.1.0"
 dependencies = [
  "criterion 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "ipld-derive 0.1.0",
+ "dag-cbor-derive 0.1.0",
  "libipld 0.1.0",
-]
-
-[[package]]
-name = "ipld-derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "quote 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "syn 1.0.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "synstructure 0.12.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -405,7 +405,7 @@ dependencies = [
  "byteorder 1.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "cid 0.3.1 (git+https://github.com/dvc94ch/rust-cid?branch=cli)",
  "failure 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "multibase 0.6.0 (git+https://github.com/dvc94ch/rust-multibase?branch=cli)",
+ "multibase 0.6.0 (git+https://github.com/multiformats/rust-multibase)",
  "multihash 0.8.1-pre (git+https://github.com/dvc94ch/rust-multihash?branch=cli)",
 ]
 
@@ -428,7 +428,7 @@ dependencies = [
 [[package]]
 name = "multibase"
 version = "0.6.0"
-source = "git+https://github.com/dvc94ch/rust-multibase?branch=cli#3335da2ebb6582595797429fe9c7e500606772d3"
+source = "git+https://github.com/multiformats/rust-multibase#f22326bca28ccb943094e181f23ebcee2339320a"
 dependencies = [
  "base-x 0.2.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "base32 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -992,7 +992,7 @@ dependencies = [
 "checksum libc 0.2.62 (registry+https://github.com/rust-lang/crates.io-index)" = "34fcd2c08d2f832f376f4173a231990fa5aef4e99fb569867318a227ef4c06ba"
 "checksum memchr 2.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "88579771288728879b57485cc7d6b07d648c9f0141eb955f8ab7f9d45394468e"
 "checksum memoffset 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)" = "ce6075db033bbbb7ee5a0bbd3a3186bbae616f57fb001c485c7ff77955f8177f"
-"checksum multibase 0.6.0 (git+https://github.com/dvc94ch/rust-multibase?branch=cli)" = "<none>"
+"checksum multibase 0.6.0 (git+https://github.com/multiformats/rust-multibase)" = "<none>"
 "checksum multibase 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)" = "b9c35dac080fd6e16a99924c8dfdef0af89d797dd851adab25feaffacf7850d6"
 "checksum multihash 0.8.1-pre (git+https://github.com/dvc94ch/rust-multihash?branch=cli)" = "<none>"
 "checksum multihash_derive 0.1.0 (git+https://github.com/dvc94ch/rust-multihash?branch=cli)" = "<none>"

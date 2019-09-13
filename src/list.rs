@@ -1,15 +1,15 @@
 use core::marker::PhantomData;
-use ipld_derive::Ipld;
-use libipld::{Cid, Ipld, IpldError, IpldStore, Prefix, Result};
+use dag_cbor_derive::DagCbor;
+use libipld::{Cid, Hash, Ipld, IpldError, IpldStore, Result};
 
 #[derive(Debug)]
-pub struct List<TPrefix: Prefix, TStore: IpldStore> {
-    prefix: PhantomData<TPrefix>,
+pub struct List<THash: Hash, TStore: IpldStore> {
+    prefix: PhantomData<THash>,
     store: TStore,
     root: Cid,
 }
 
-impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
+impl<THash: Hash, TStore: IpldStore> List<THash, TStore> {
     pub fn load(root: Cid) -> Self {
         let store: TStore = Default::default();
         Self {
@@ -22,7 +22,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
     pub fn new(width: u32) -> Result<Self> {
         let mut store: TStore = Default::default();
         let node = Node::new(width, 0, vec![]);
-        let root = store.write::<TPrefix, _>(&node)?;
+        let root = store.write_cbor::<THash, _>(&node)?;
         Ok(Self {
             prefix: PhantomData,
             store,
@@ -52,7 +52,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                     data.push(items[i].clone());
                 }
                 let node = Node::new(width as u32, height, data);
-                let cid = store.write::<TPrefix, _>(&node)?;
+                let cid = store.write_cbor::<THash, _>(&node)?;
                 nodes.push(Ipld::Link(cid));
             }
             if node_count == 1 {
@@ -70,7 +70,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
     }
 
     pub fn push(&mut self, mut value: Ipld) -> Result<()> {
-        let root = self.store.read::<Node>(&self.root)?;
+        let root = self.store.read_cbor::<Node>(&self.root)?;
         let width = root.width();
         let root_height = root.height();
         let mut height = root_height;
@@ -85,7 +85,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                 .last()
                 .expect("at least one link");
             let cid = ipld_cid_ref(link)?;
-            let node = self.store.read::<Node>(cid)?;
+            let node = self.store.read_cbor::<Node>(cid)?;
             height = node.height();
             chain.push(node);
         }
@@ -96,16 +96,16 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                 let data = node.data_mut();
                 data.pop();
                 data.push(value);
-                value = Ipld::Link(self.store.write::<TPrefix, _>(&node)?);
+                value = Ipld::Link(self.store.write_cbor::<THash, _>(&node)?);
             } else {
                 let data = node.data_mut();
                 if data.len() < width {
                     data.push(value);
-                    value = Ipld::Link(self.store.write::<TPrefix, _>(&node)?);
+                    value = Ipld::Link(self.store.write_cbor::<THash, _>(&node)?);
                     mutated = true;
                 } else {
                     let node = Node::new(width as u32, node.height(), vec![value]);
-                    value = Ipld::Link(self.store.write::<TPrefix, _>(&node)?);
+                    value = Ipld::Link(self.store.write_cbor::<THash, _>(&node)?);
                     mutated = false;
                 }
             }
@@ -114,7 +114,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
         if !mutated {
             let height = root_height + 1;
             let node = Node::new(width as u32, height, vec![Ipld::Link(self.root.clone()), value]);
-            self.root = self.store.write::<TPrefix, _>(&node)?;
+            self.root = self.store.write_cbor::<THash, _>(&node)?;
         } else {
             self.root = ipld_cid(value)?;
         }
@@ -132,7 +132,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
     }
 
     pub fn get(&self, mut index: usize) -> Result<Option<Ipld>> {
-        let root = self.store.read::<Node>(&self.root)?;
+        let root = self.store.read_cbor::<Node>(&self.root)?;
         let width = root.width();
         let mut height = root.height();
         let mut node;
@@ -149,7 +149,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                     return Ok(Some(ipld.to_owned()));
                 }
                 let cid = ipld_cid_ref(ipld)?;
-                node = self.store.read::<Node>(cid)?;
+                node = self.store.read_cbor::<Node>(cid)?;
                 node_ref = &node;
                 index %= width.pow(height);
                 height = node.height();
@@ -165,7 +165,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
     }
 
     pub fn len(&self) -> Result<usize> {
-        let root = self.store.read::<Node>(&self.root)?;
+        let root = self.store.read_cbor::<Node>(&self.root)?;
         let width = root.width();
         let mut height = root.height();
         let mut size = width.pow(height + 1);
@@ -177,7 +177,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
                 return Ok(size);
             }
             let cid = ipld_cid_ref(data.last().unwrap())?;
-            node = self.store.read::<Node>(cid)?;
+            node = self.store.read_cbor::<Node>(cid)?;
             height = node.height();
         }
     }
@@ -199,7 +199,7 @@ fn ipld_cid_ref<'a>(ipld: &'a Ipld) -> Result<&'a Cid> {
     }
 }
 
-#[derive(Clone, Debug, Ipld)]
+#[derive(Clone, Debug, DagCbor)]
 struct Node {
     width: u32,
     height: u32,
@@ -233,12 +233,12 @@ impl Node {
 }
 
 // TODO: make more efficient
-pub struct Iter<'a, TPrefix: Prefix, TStore: IpldStore> {
-    list: &'a List<TPrefix, TStore>,
+pub struct Iter<'a, THash: Hash, TStore: IpldStore> {
+    list: &'a List<THash, TStore>,
     index: usize,
 }
 
-impl<'a, TPrefix: Prefix, TStore: IpldStore> Iterator for Iter<'a, TPrefix, TStore> {
+impl<'a, THash: Hash, TStore: IpldStore> Iterator for Iter<'a, THash, TStore> {
     type Item = Result<Ipld>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -253,8 +253,8 @@ impl<'a, TPrefix: Prefix, TStore: IpldStore> Iterator for Iter<'a, TPrefix, TSto
     }
 }
 
-impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
-    pub fn iter<'a>(&'a self) -> Iter<'a, TPrefix, TStore> {
+impl<THash: Hash, TStore: IpldStore> List<THash, TStore> {
+    pub fn iter<'a>(&'a self) -> Iter<'a, THash, TStore> {
         Iter {
             list: self,
             index: 0,
@@ -265,7 +265,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> List<TPrefix, TStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libipld::{mock::MemStore, DefaultPrefix};
+    use libipld::{mock::MemStore, DefaultHash};
 
     fn int(i: usize) -> Option<Ipld> {
         Some(Ipld::Integer(i as i128))
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_list() -> Result<()> {
-        let mut list = List::<DefaultPrefix, MemStore>::new(3)?;
+        let mut list = List::<DefaultHash, MemStore>::new(3)?;
         for i in 0..13 {
             assert_eq!(list.get(i)?, None);
             assert_eq!(list.len()?, i);
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn test_list_from() -> Result<()> {
         let data: Vec<Ipld> = (0..13).map(|i| Ipld::Integer(i as i128)).collect();
-        let list = List::<DefaultPrefix, MemStore>::from(3, data.clone())?;
+        let list = List::<DefaultHash, MemStore>::from(3, data.clone())?;
         let data2: Vec<Ipld> = list.iter().map(|ipld| ipld.unwrap()).collect();
         assert_eq!(data, data2);
         Ok(())

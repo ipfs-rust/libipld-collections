@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 libipld = { path = "../rust-ipld" }
-ipld-derive = { path = "../rust-ipld/derive" }
+dag-cbor-derive = { path = "../rust-ipld/dag-cbor-derive" }
 
 [dev-dependencies]
 criterion = "0.3"

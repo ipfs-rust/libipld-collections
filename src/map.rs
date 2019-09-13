@@ -1,15 +1,15 @@
-use ipld_derive::Ipld;
-use libipld::{Cid, Ipld, IpldStore, Prefix, Result};
+use dag_cbor_derive::DagCbor;
+use libipld::{Cid, Hash, Ipld, IpldStore, Result};
 use core::marker::PhantomData;
 
 #[derive(Debug)]
-pub struct Map<TPrefix: Prefix, TStore: IpldStore> {
-    prefix: PhantomData<TPrefix>,
+pub struct Map<THash: Hash, TStore: IpldStore> {
+    prefix: PhantomData<THash>,
     store: TStore,
     root: Cid,
 }
 
-impl<TPrefix: Prefix, TStore: IpldStore> Map<TPrefix, TStore> {
+impl<THash: Hash, TStore: IpldStore> Map<THash, TStore> {
     pub fn load(root: Cid) -> Self {
         let store: TStore = Default::default();
         Self {
@@ -22,7 +22,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Map<TPrefix, TStore> {
     pub fn new(hash: String, bit_width: u32, bucket_size: u32) -> Result<Self> {
         let mut store: TStore = Default::default();
         let root = Root::new(hash, bit_width, bucket_size);
-        let root = store.write::<TPrefix, _>(&root)?;
+        let root = store.write_cbor::<THash, _>(&root)?;
         Ok(Self {
             prefix: PhantomData,
             store,
@@ -31,7 +31,7 @@ impl<TPrefix: Prefix, TStore: IpldStore> Map<TPrefix, TStore> {
     }
 }
 
-#[derive(Debug, Ipld)]
+#[derive(Debug, DagCbor)]
 struct Root {
     #[ipld(name = "hashAlg")]
     hash_alg: String,
@@ -55,13 +55,13 @@ impl Root {
     }
 }
 
-#[derive(Debug, Ipld)]
+#[derive(Debug, DagCbor)]
 struct Node {
     map: Vec<u8>,
     data: Vec<Element>,
 }
 
-#[derive(Debug, Ipld)]
+#[derive(Debug, DagCbor)]
 //#[ipld(repr = "kinded")]
 enum Element {
     Node(Node),
@@ -69,7 +69,7 @@ enum Element {
     Bucket(Vec<Entry>),
 }
 
-#[derive(Debug, Ipld)]
+#[derive(Debug, DagCbor)]
 #[ipld(repr = "list")]
 struct Entry {
     key: Vec<u8>,
