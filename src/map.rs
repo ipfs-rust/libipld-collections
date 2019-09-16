@@ -17,14 +17,14 @@ impl<TStore: Store, TCache: Cache, THash: Hash> Map<TStore, TCache, THash> {
         }
     }
 
-    pub fn new(
-        mut store: BlockStore<TStore, TCache>,
+    pub async fn new(
+        store: BlockStore<TStore, TCache>,
         hash: String,
         bit_width: u32,
         bucket_size: u32,
     ) -> Result<Self> {
         let root = Root::new(hash, bit_width, bucket_size);
-        let root = store.write_cbor::<THash, _>(&root)?;
+        let root = store.write_cbor::<THash, _>(&root).await?;
         Ok(Self {
             prefix: PhantomData,
             store,

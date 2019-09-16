@@ -1,8 +1,12 @@
+use async_std::task;
 use block_cache::BlockCache;
+use block_store::BlockStore;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use ipld_collections::{mock::MemStore, BlockStore, DefaultHash, Ipld, List};
+use ipld_collections::{BlockStore as Store, DefaultHash, Ipld, List};
+use tempdir::TempDir;
+use std::sync::Arc;
 
-type MemList = List<MemStore, BlockCache, DefaultHash>;
+type MemList = List<BlockStore, BlockCache, DefaultHash>;
 
 fn baseline(c: &mut Criterion) {
     c.bench_function("Create Vec 1024xi128. size: 1024 * 16", |b| {
@@ -22,34 +26,46 @@ fn from(c: &mut Criterion) {
         data.push(Ipld::Integer(i as i128));
     }
 
+    let tmp = TempDir::new("from").unwrap();
+    let store = Arc::new(Store::new(tmp.path().into(), 16));
+
     c.bench_function("from: 1024xi128; n: 4; width: 256; size: 4096", |b| {
         b.iter(|| {
-            let store = BlockStore::new(16);
-            let vec = MemList::from(store, 256, data.clone()).unwrap();
-            black_box(vec);
+            task::block_on(async {
+                let vec = MemList::from(store.clone(), 256, data.clone()).await.unwrap();
+                black_box(vec);
+            });
         })
     });
+
+    tmp.close().unwrap();
 }
 
 fn push(c: &mut Criterion) {
+    let tmp = TempDir::new("push").unwrap();
+    let store = Arc::new(Store::new(tmp.path().into(), 16));
+    
     c.bench_function(
         "default push: 1024xi128; n: 4; width: 256; size: 4096",
         |b| {
             b.iter(|| {
-                let store = BlockStore::new(16);
-                let mut list = MemList::new(store, 256).unwrap();
-                for i in 0..1024 {
-                    list.push(Ipld::Integer(i as i128)).unwrap();
-                }
-                black_box(list);
+                task::block_on(async {
+                    let mut list = MemList::new(store.clone(), 256).await.unwrap();
+                    for i in 0..1024 {
+                        list.push(Ipld::Integer(i as i128)).await.unwrap();
+                    }
+                    black_box(list);
+                });
             })
         },
     );
+
+    tmp.close().unwrap();
 }
 
 criterion_group! {
     name = benches;
-    config = Criterion::default().sample_size(30);
+    config = Criterion::default().sample_size(10);
     targets = baseline, from, push
 }
 
