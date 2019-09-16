@@ -6,11 +6,14 @@ edition = "2018"
 
 [dependencies]
 block-cache = { path = "../rust-ipld/cache" }
+block-store = { path = "../rust-ipld/store" }
 dag-cbor-derive = { path = "../rust-ipld/dag-cbor-derive" }
 libipld = { path = "../rust-ipld" }
 
 [dev-dependencies]
+async-std = "0.99"
 criterion = "0.3"
+tempdir = "0.3"
 
 [[bench]]
 name = "list"
