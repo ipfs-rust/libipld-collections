@@ -1,8 +1,8 @@
+use block_cache::BlockCache;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use ipld_collections::{mock::MemStore, Ipld, List};
+use ipld_collections::{mock::MemStore, BlockStore, DefaultHash, Ipld, List};
 
-type DefaultList = List<libipld::Blake2b, MemStore>;
-type Sha2List = List<libipld::Sha2_256, MemStore>;
+type MemList = List<MemStore, BlockCache, DefaultHash>;
 
 fn baseline(c: &mut Criterion) {
     c.bench_function("Create Vec 1024xi128. size: 1024 * 16", |b| {
@@ -24,7 +24,8 @@ fn from(c: &mut Criterion) {
 
     c.bench_function("from: 1024xi128; n: 4; width: 256; size: 4096", |b| {
         b.iter(|| {
-            let vec = DefaultList::from(256, data.clone()).unwrap();
+            let store = BlockStore::new(16);
+            let vec = MemList::from(store, 256, data.clone()).unwrap();
             black_box(vec);
         })
     });
@@ -35,7 +36,8 @@ fn push(c: &mut Criterion) {
         "default push: 1024xi128; n: 4; width: 256; size: 4096",
         |b| {
             b.iter(|| {
-                let mut list = DefaultList::new(256).unwrap();
+                let store = BlockStore::new(16);
+                let mut list = MemList::new(store, 256).unwrap();
                 for i in 0..1024 {
                     list.push(Ipld::Integer(i as i128)).unwrap();
                 }
@@ -45,22 +47,10 @@ fn push(c: &mut Criterion) {
     );
 }
 
-fn push_sha2(c: &mut Criterion) {
-    c.bench_function("sha2 push: 1024xi128; n: 4; width: 256; size: 4096", |b| {
-        b.iter(|| {
-            let mut list = Sha2List::new(256).unwrap();
-            for i in 0..1024 {
-                list.push(Ipld::Integer(i as i128)).unwrap();
-            }
-            black_box(list);
-        })
-    });
-}
-
 criterion_group! {
     name = benches;
-    config = Criterion::default().sample_size(10);
-    targets = baseline, from, push, push_sha2
+    config = Criterion::default().sample_size(30);
+    targets = baseline, from, push
 }
 
 criterion_main!(benches);
