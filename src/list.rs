@@ -277,25 +277,25 @@ mod tests {
     }
 
     async fn test_list() -> Result<()> {
-            let store = Arc::new(BlockStore::new(PathBuf::new().into_boxed_path(), 16));
-            let mut list = MemList::new(store, 3).await?;
-            for i in 0..13 {
-                assert_eq!(list.get(i).await?, None);
-                assert_eq!(list.len().await?, i);
-                list.push(Ipld::Integer(i as i128)).await?;
-                for j in 0..i {
-                    assert_eq!(list.get(j).await?, int(j));
-                }
+        let store = Arc::new(BlockStore::new(PathBuf::new().into_boxed_path(), 16));
+        let mut list = MemList::new(store, 3).await?;
+        for i in 0..13 {
+            assert_eq!(list.get(i).await?, None);
+            assert_eq!(list.len().await?, i);
+            list.push(Ipld::Integer(i as i128)).await?;
+            for j in 0..i {
+                assert_eq!(list.get(j).await?, int(j));
             }
-            /*for i in 0..13 {
-                list.set(i, (i as i128 + 1).into())?;
-                assert_eq!(list.get(i)?, int(i + 1));
-            }*/
-            /*for i in (0..13).rev() {
-                assert_eq!(vec.len()?, i + 1);
-                assert_eq!(vec.pop()?, int(i));
-            }*/
-            Ok(())
+        }
+        /*for i in 0..13 {
+            list.set(i, (i as i128 + 1).into())?;
+            assert_eq!(list.get(i)?, int(i + 1));
+        }*/
+        /*for i in (0..13).rev() {
+            assert_eq!(vec.len()?, i + 1);
+            assert_eq!(vec.pop()?, int(i));
+        }*/
+        Ok(())
     }
 
     #[test]
@@ -304,16 +304,16 @@ mod tests {
     }
 
     async fn test_list_from() -> Result<()> {
-            let data: Vec<Ipld> = (0..13).map(|i| Ipld::Integer(i as i128)).collect();
-            let store = Arc::new(BlockStore::new(PathBuf::new().into_boxed_path(), 16));
-            let list = MemList::from(store, 3, data.clone()).await?;
-            let mut data2: Vec<Ipld> = Vec::new();
-            let mut iter = list.iter();
-            while let Some(elem) = iter.next().await? {
-                data2.push(elem)
-            }
-            assert_eq!(data, data2);
-            Ok(())
+        let data: Vec<Ipld> = (0..13).map(|i| Ipld::Integer(i as i128)).collect();
+        let store = Arc::new(BlockStore::new(PathBuf::new().into_boxed_path(), 16));
+        let list = MemList::from(store, 3, data.clone()).await?;
+        let mut data2: Vec<Ipld> = Vec::new();
+        let mut iter = list.iter();
+        while let Some(elem) = iter.next().await? {
+            data2.push(elem)
+        }
+        assert_eq!(data, data2);
+        Ok(())
     }
 
     #[test]
