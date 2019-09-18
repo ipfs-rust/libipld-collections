@@ -24,7 +24,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> Map<TStore, TCache, THash> {
         bucket_size: u32,
     ) -> Result<Self> {
         let root = Root::new(hash, bit_width, bucket_size);
-        let root = store.write_cbor::<THash, _>(&root).await?;
+        let root = store.write_cbor::<THash, _>(&root)?;
         Ok(Self {
             prefix: PhantomData,
             store,

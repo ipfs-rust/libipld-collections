@@ -48,7 +48,7 @@ fn from(c: &mut Criterion) {
 fn push_mem(c: &mut Criterion) {
     let store = Arc::new(Store::new(PathBuf::new().into(), 16));
 
-    c.bench_function("push fs: 1024xi128; n: 4; width: 256; size: 4096", |b| {
+    c.bench_function("push mem: 1024xi128; n: 4; width: 256; size: 4096", |b| {
         b.iter(|| {
             task::block_on(async {
                 let mut list = MemList::new(store.clone(), 256).await.unwrap();

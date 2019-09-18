@@ -20,7 +20,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
 
     pub async fn new(store: Arc<BlockStore<TStore, TCache>>, width: u32) -> Result<Self> {
         let node = Node::new(width, 0, vec![]);
-        let root = store.write_cbor::<THash, _>(&node).await?;
+        let root = store.write_cbor::<THash, _>(&node)?;
         Ok(Self {
             prefix: PhantomData,
             store,
@@ -53,7 +53,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
                     data.push(items[i].clone());
                 }
                 let node = Node::new(width as u32, height, data);
-                let cid = store.write_cbor::<THash, _>(&node).await?;
+                let cid = store.write_cbor::<THash, _>(&node)?;
                 nodes.push(Ipld::Link(cid));
             }
             if node_count == 1 {
@@ -97,16 +97,16 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
                 let data = node.data_mut();
                 data.pop();
                 data.push(value);
-                value = Ipld::Link(self.store.write_cbor::<THash, _>(&node).await?);
+                value = Ipld::Link(self.store.write_cbor::<THash, _>(&node)?);
             } else {
                 let data = node.data_mut();
                 if data.len() < width {
                     data.push(value);
-                    value = Ipld::Link(self.store.write_cbor::<THash, _>(&node).await?);
+                    value = Ipld::Link(self.store.write_cbor::<THash, _>(&node)?);
                     mutated = true;
                 } else {
                     let node = Node::new(width as u32, node.height(), vec![value]);
-                    value = Ipld::Link(self.store.write_cbor::<THash, _>(&node).await?);
+                    value = Ipld::Link(self.store.write_cbor::<THash, _>(&node)?);
                     mutated = false;
                 }
             }
@@ -119,7 +119,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
                 height,
                 vec![Ipld::Link(self.root.clone()), value],
             );
-            self.root = self.store.write_cbor::<THash, _>(&node).await?;
+            self.root = self.store.write_cbor::<THash, _>(&node)?;
         } else {
             self.root = ipld_cid(value)?;
         }

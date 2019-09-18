@@ -1,6 +1,6 @@
 use async_std::task;
 use block_cache::BlockCache;
-//use block_store::BlockStore;
+use block_store::BlockStore;
 use criterion::black_box;
 use ipld_collections::{mock, BlockStore as Store, DefaultHash, Ipld, List, Result};
 use std::sync::Arc;
@@ -10,7 +10,7 @@ async fn run() -> Result<()> {
     let tmp = TempDir::new("store")?;
     let store = Arc::new(Store::new(tmp.path().into(), 16));
     // push: 1024xi128; n: 4; width: 256; size: 4096
-    let mut list = List::<mock::MemStore, BlockCache, DefaultHash>::new(store, 256).await?;
+    let mut list = List::<BlockStore, BlockCache, DefaultHash>::new(store, 256).await?;
     for i in 0..1024 {
         list.push(Ipld::Integer(i as i128)).await?;
     }
