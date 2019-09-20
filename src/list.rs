@@ -1,6 +1,8 @@
+#![allow(unreachable_code)] // looks like a nightly bug 15.9.19
+use crate::Result;
 use core::marker::PhantomData;
 use dag_cbor_derive::DagCbor;
-use libipld::{BlockStore, Cache, Cid, Hash, Ipld, IpldError, Result, Store};
+use libipld::{BlockStore, Cache, Cid, Hash, Ipld, IpldError, Store};
 use std::sync::Arc;
 
 pub struct List<TStore: Store, TCache: Cache, THash: Hash> {
@@ -10,17 +12,17 @@ pub struct List<TStore: Store, TCache: Cache, THash: Hash> {
 }
 
 impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
-    pub fn load(store: Arc<BlockStore<TStore, TCache>>, root: Cid) -> Self {
-        Self {
+    pub async fn load(store: Arc<BlockStore<TStore, TCache>>, root: Cid) -> Result<Self> {
+        Ok(Self {
             prefix: PhantomData,
             store,
             root,
-        }
+        })
     }
 
     pub async fn new(store: Arc<BlockStore<TStore, TCache>>, width: u32) -> Result<Self> {
         let node = Node::new(width, 0, vec![]);
-        let root = store.write_cbor::<THash, _>(&node)?;
+        let root = store.write_cbor::<THash, _>(&node).await?;
         Ok(Self {
             prefix: PhantomData,
             store,
@@ -53,7 +55,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
                     data.push(items[i].clone());
                 }
                 let node = Node::new(width as u32, height, data);
-                let cid = store.write_cbor::<THash, _>(&node)?;
+                let cid = store.write_cbor::<THash, _>(&node).await?;
                 nodes.push(Ipld::Link(cid));
             }
             if node_count == 1 {
@@ -97,16 +99,16 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
                 let data = node.data_mut();
                 data.pop();
                 data.push(value);
-                value = Ipld::Link(self.store.write_cbor::<THash, _>(&node)?);
+                value = Ipld::Link(self.store.write_cbor::<THash, _>(&node).await?);
             } else {
                 let data = node.data_mut();
                 if data.len() < width {
                     data.push(value);
-                    value = Ipld::Link(self.store.write_cbor::<THash, _>(&node)?);
+                    value = Ipld::Link(self.store.write_cbor::<THash, _>(&node).await?);
                     mutated = true;
                 } else {
                     let node = Node::new(width as u32, node.height(), vec![value]);
-                    value = Ipld::Link(self.store.write_cbor::<THash, _>(&node)?);
+                    value = Ipld::Link(self.store.write_cbor::<THash, _>(&node).await?);
                     mutated = false;
                 }
             }
@@ -119,7 +121,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
                 height,
                 vec![Ipld::Link(self.root.clone()), value],
             );
-            self.root = self.store.write_cbor::<THash, _>(&node)?;
+            self.root = self.store.write_cbor::<THash, _>(&node).await?;
         } else {
             self.root = ipld_cid(value)?;
         }
@@ -268,7 +270,6 @@ mod tests {
         mock::{MemCache, MemStore},
         DefaultHash,
     };
-    use std::path::PathBuf;
 
     type MemList = List<MemStore, MemCache, DefaultHash>;
 
@@ -277,7 +278,7 @@ mod tests {
     }
 
     async fn test_list() -> Result<()> {
-        let store = Arc::new(BlockStore::new(PathBuf::new().into_boxed_path(), 16));
+        let store = Arc::new(BlockStore::new(MemStore::default(), MemCache::default()));
         let mut list = MemList::new(store, 3).await?;
         for i in 0..13 {
             assert_eq!(list.get(i).await?, None);
@@ -305,7 +306,7 @@ mod tests {
 
     async fn test_list_from() -> Result<()> {
         let data: Vec<Ipld> = (0..13).map(|i| Ipld::Integer(i as i128)).collect();
-        let store = Arc::new(BlockStore::new(PathBuf::new().into_boxed_path(), 16));
+        let store = Arc::new(BlockStore::new(MemStore::default(), MemCache::default()));
         let list = MemList::from(store, 3, data.clone()).await?;
         let mut data2: Vec<Ipld> = Vec::new();
         let mut iter = list.iter();

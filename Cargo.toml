@@ -5,9 +5,10 @@ authors = ["David Craven <david@craven.ch>"]
 edition = "2018"
 
 [dependencies]
+async-trait = "0.1"
 block-cache = { path = "../rust-ipld/cache" }
-block-store = { path = "../rust-ipld/store" }
 dag-cbor-derive = { path = "../rust-ipld/dag-cbor-derive" }
+ipld-daemon = { path = "../rust-ipld-daemon" }
 libipld = { path = "../rust-ipld" }
 
 [dev-dependencies]

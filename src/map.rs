@@ -1,6 +1,8 @@
+#![allow(dead_code)] // TODO
+use crate::Result;
 use core::marker::PhantomData;
 use dag_cbor_derive::DagCbor;
-use libipld::{BlockStore, Cache, Cid, Hash, Ipld, Result, Store};
+use libipld::{BlockStore, Cache, Cid, Hash, Ipld, Store};
 
 pub struct Map<TStore: Store, TCache: Cache, THash: Hash> {
     prefix: PhantomData<THash>,
@@ -24,7 +26,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> Map<TStore, TCache, THash> {
         bucket_size: u32,
     ) -> Result<Self> {
         let root = Root::new(hash, bit_width, bucket_size);
-        let root = store.write_cbor::<THash, _>(&root)?;
+        let root = store.write_cbor::<THash, _>(&root).await?;
         Ok(Self {
             prefix: PhantomData,
             store,
