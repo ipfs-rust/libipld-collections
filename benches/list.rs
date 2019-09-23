@@ -37,6 +37,26 @@ fn from_mem(c: &mut Criterion) {
     });
 }
 
+fn from_buf(c: &mut Criterion) {
+    let mut data = Vec::with_capacity(1024);
+    for i in 0..1024 {
+        data.push(Ipld::Integer(i as i128));
+    }
+
+    let store = Arc::new(BufStore::new(MemStore::default(), 16, 16));
+
+    c.bench_function("from buf: 1024xi128; n: 4; width: 256; size: 4096", |b| {
+        b.iter(|| {
+            task::block_on(async {
+                let list = List::<_, H>::from(store.clone(), "bench_from_buf", 256, data.clone())
+                    .await
+                    .unwrap();
+                list.flush().await.unwrap();
+            });
+        })
+    });
+}
+
 fn from_fs(c: &mut Criterion) {
     let mut data = Vec::with_capacity(1024);
     for i in 0..1024 {
@@ -76,6 +96,24 @@ fn push_mem(c: &mut Criterion) {
     });
 }
 
+fn push_buf(c: &mut Criterion) {
+    let store = Arc::new(BufStore::new(MemStore::default(), 16, 16));
+
+    c.bench_function("push buf: 1024xi128; n: 4; width: 256; size: 4096", |b| {
+        b.iter(|| {
+            task::block_on(async {
+                let list = List::<_, H>::new(store.clone(), "bench_push_buf", 256)
+                    .await
+                    .unwrap();
+                for i in 0..1024 {
+                    list.push(Ipld::Integer(i as i128)).await.unwrap();
+                }
+                list.flush().await.unwrap();
+            });
+        })
+    });
+}
+
 fn push_fs(c: &mut Criterion) {
     let store = task::block_on(BlockStore::connect("ipld_collections")).unwrap();
     let store = Arc::new(BufStore::new(store, 16, 16));
@@ -89,7 +127,7 @@ fn push_fs(c: &mut Criterion) {
                 for i in 0..1024 {
                     list.push(Ipld::Integer(i as i128)).await.unwrap();
                 }
-                list.flush().await.unwrap();
+                //list.flush().await.unwrap();
             });
         })
     });
@@ -98,7 +136,7 @@ fn push_fs(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(10);
-    targets = baseline, from_mem, from_fs, push_mem, push_fs
+    targets = baseline, from_mem, from_buf, from_fs, push_mem, push_buf, push_fs
 }
 
 criterion_main!(benches);
