@@ -1,27 +1,38 @@
+#![feature(try_trait)]
+use failure::Fail;
+
 pub mod list;
 pub mod map;
 
 pub use list::*;
 pub use map::*;
 
-pub type Result<T> = core::result::Result<T, libipld::DagError>;
+pub type Result<T> = core::result::Result<T, Error>;
 
-use block_cache::BlockCache as Cache;
-use ipld_daemon::BlockStore as Store;
-use libipld::{Cid, DefaultHash};
-use std::sync::Arc;
-type BlockStore = libipld::BlockStore<Store, Cache>;
-
-pub async fn create_store(cache_size: usize) -> Result<Arc<BlockStore>> {
-    let bstore = Store::connect().await?;
-    let bcache = Cache::new(cache_size);
-    Ok(Arc::new(BlockStore::new(bstore, bcache)))
+#[derive(Debug, Fail)]
+pub enum Error {
+    #[fail(display = "{}", _0)]
+    Block(libipld::BlockError),
+    #[fail(display = "{}", _0)]
+    Ipld(libipld::IpldError),
+    #[fail(display = "Block not found")]
+    NotFound(core::option::NoneError),
 }
 
-pub async fn create_list(store: Arc<BlockStore>, width: u32) -> Result<List<Store, Cache, DefaultHash>> {
-    List::new(store, width).await
+impl From<libipld::BlockError> for Error {
+    fn from(err: libipld::BlockError) -> Self {
+        Self::Block(err)
+    }
 }
 
-pub async fn open_list(store: Arc<BlockStore>, cid: Cid) -> Result<List<Store, Cache, DefaultHash>> {
-    List::load(store, cid).await
+impl From<libipld::IpldError> for Error {
+    fn from(err: libipld::IpldError) -> Self {
+        Self::Ipld(err)
+    }
+}
+
+impl From<core::option::NoneError> for Error {
+    fn from(err: core::option::NoneError) -> Self {
+        Self::NotFound(err)
+    }
 }

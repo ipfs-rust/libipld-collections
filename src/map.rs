@@ -2,16 +2,16 @@
 use crate::Result;
 use core::marker::PhantomData;
 use dag_cbor_derive::DagCbor;
-use libipld::{BlockStore, Cache, Cid, Hash, Ipld, Store};
+use libipld::{Cid, Hash, Ipld, Store, StoreCborExt};
 
-pub struct Map<TStore: Store, TCache: Cache, THash: Hash> {
+pub struct Map<TStore: Store, THash: Hash> {
     prefix: PhantomData<THash>,
-    store: BlockStore<TStore, TCache>,
+    store: TStore,
     root: Cid,
 }
 
-impl<TStore: Store, TCache: Cache, THash: Hash> Map<TStore, TCache, THash> {
-    pub fn load(store: BlockStore<TStore, TCache>, root: Cid) -> Self {
+impl<TStore: Store, THash: Hash> Map<TStore, THash> {
+    pub fn load(store: TStore, root: Cid) -> Self {
         Self {
             prefix: PhantomData,
             store,
@@ -20,7 +20,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> Map<TStore, TCache, THash> {
     }
 
     pub async fn new(
-        store: BlockStore<TStore, TCache>,
+        store: TStore,
         hash: String,
         bit_width: u32,
         bucket_size: u32,

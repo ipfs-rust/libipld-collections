@@ -1,16 +1,18 @@
 use async_std::task;
-use criterion::black_box;
-use ipld_collections::{create_store, create_list, Result};
-use libipld::Ipld;
+use ipld_collections::{List, Result};
+use ipld_daemon::BlockStore;
+use libipld::{BufStore, DefaultHash as H, Ipld};
 
 async fn run() -> Result<()> {
-    let store = create_store(16).await?;
-    let mut list = create_list(store, 256).await?;
+    let store = BlockStore::connect("ipld_collections").await?;
+    let store = BufStore::new(store, 16, 16);
+
+    let list = List::<_, H>::new(store, "test", 256).await?;
     // push: 1024xi128; n: 4; width: 256; size: 4096
     for i in 0..1024 {
         list.push(Ipld::Integer(i as i128)).await?;
     }
-    black_box(list);
+    list.flush().await?;
     Ok(())
 }
 

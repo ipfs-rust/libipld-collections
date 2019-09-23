@@ -2,37 +2,40 @@
 use crate::Result;
 use core::marker::PhantomData;
 use dag_cbor_derive::DagCbor;
-use libipld::{BlockStore, Cache, Cid, Hash, Ipld, IpldError, Store};
-use std::sync::Arc;
+use libipld::{Cid, Hash, Ipld, IpldError, Store, StoreCborExt};
 
-pub struct List<TStore: Store, TCache: Cache, THash: Hash> {
+pub struct List<TStore, THash> {
     prefix: PhantomData<THash>,
-    store: Arc<BlockStore<TStore, TCache>>,
-    root: Cid,
+    store: TStore,
+    link: &'static str,
 }
 
-impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
-    pub async fn load(store: Arc<BlockStore<TStore, TCache>>, root: Cid) -> Result<Self> {
+impl<TStore: Store, THash: Hash> List<TStore, THash> {
+    pub async fn new(store: TStore, link: &'static str, width: u32) -> Result<Self> {
+        let root = store.read_link(link).await?;
+        if root.is_none() {
+            let node = Node::new(width, 0, vec![]);
+            let root = store.write_cbor::<THash, _>(&node).await?;
+            store.pin(&root).await?;
+            store.write_link(link, &root).await?;
+        }
+
         Ok(Self {
             prefix: PhantomData,
             store,
-            root,
+            link,
         })
     }
 
-    pub async fn new(store: Arc<BlockStore<TStore, TCache>>, width: u32) -> Result<Self> {
-        let node = Node::new(width, 0, vec![]);
-        let root = store.write_cbor::<THash, _>(&node).await?;
-        Ok(Self {
-            prefix: PhantomData,
-            store,
-            root,
-        })
+    pub async fn flush(&self) -> Result<()> {
+        self.store.flush().await?;
+        Ok(())
     }
 
     // TODO take an iterator instead of a vec.
     pub async fn from(
-        store: Arc<BlockStore<TStore, TCache>>,
+        store: TStore,
+        link: &'static str,
         width: u32,
         mut items: Vec<Ipld>,
     ) -> Result<Self> {
@@ -59,11 +62,13 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
                 nodes.push(Ipld::Link(cid));
             }
             if node_count == 1 {
-                let root = ipld_cid_ref(&nodes[0])?.to_owned();
+                let root = ipld_cid_ref(&nodes[0])?;
+                store.pin(&root).await?;
+                store.write_link(link, &root).await?;
                 return Ok(Self {
                     prefix: PhantomData,
                     store,
-                    root,
+                    link,
                 });
             } else {
                 items = nodes;
@@ -72,13 +77,14 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
         }
     }
 
-    pub async fn push(&mut self, mut value: Ipld) -> Result<()> {
-        let root = self.store.read_cbor::<Node>(&self.root).await?;
-        let width = root.width();
-        let root_height = root.height();
+    pub async fn push(&self, mut value: Ipld) -> Result<()> {
+        let root = self.store.read_link(self.link).await??;
+        let node = self.store.read_cbor::<Node>(&root).await??;
+        let width = node.width();
+        let root_height = node.height();
         let mut height = root_height;
         let mut chain = Vec::with_capacity(height as usize + 1);
-        chain.push(root);
+        chain.push(node);
 
         while height > 0 {
             let link = chain
@@ -88,7 +94,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
                 .last()
                 .expect("at least one link");
             let cid = ipld_cid_ref(link)?;
-            let node = self.store.read_cbor::<Node>(cid).await?;
+            let node = self.store.read_cbor::<Node>(cid).await??;
             height = node.height();
             chain.push(node);
         }
@@ -114,17 +120,17 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
             }
         }
 
-        if !mutated {
+        let new_root = if !mutated {
             let height = root_height + 1;
-            let node = Node::new(
-                width as u32,
-                height,
-                vec![Ipld::Link(self.root.clone()), value],
-            );
-            self.root = self.store.write_cbor::<THash, _>(&node).await?;
+            let node = Node::new(width as u32, height, vec![Ipld::Link(root.clone()), value]);
+            self.store.write_cbor::<THash, _>(&node).await?
         } else {
-            self.root = ipld_cid(value)?;
-        }
+            ipld_cid(value)?
+        };
+
+        self.store.pin(&new_root).await?;
+        self.store.write_link(self.link, &new_root).await?;
+        self.store.unpin(&root).await?;
 
         Ok(())
     }
@@ -139,11 +145,12 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
     }
 
     pub async fn get(&self, mut index: usize) -> Result<Option<Ipld>> {
-        let root = self.store.read_cbor::<Node>(&self.root).await?;
-        let width = root.width();
-        let mut height = root.height();
+        let root = self.store.read_link(self.link).await??;
+        let node = self.store.read_cbor::<Node>(&root).await??;
+        let mut node_ref = &node;
+        let width = node.width();
+        let mut height = node.height();
         let mut node;
-        let mut node_ref = &root;
 
         if index > width.pow(height + 1) {
             return Ok(None);
@@ -156,7 +163,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
                     return Ok(Some(ipld.to_owned()));
                 }
                 let cid = ipld_cid_ref(ipld)?;
-                node = self.store.read_cbor::<Node>(cid).await?;
+                node = self.store.read_cbor::<Node>(cid).await??;
                 node_ref = &node;
                 index %= width.pow(height);
                 height = node.height();
@@ -172,7 +179,8 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
     }
 
     pub async fn len(&self) -> Result<usize> {
-        let root = self.store.read_cbor::<Node>(&self.root).await?;
+        let root_cid = self.store.read_link(self.link).await??;
+        let root = self.store.read_cbor::<Node>(&root_cid).await??;
         let width = root.width();
         let mut height = root.height();
         let mut size = width.pow(height + 1);
@@ -184,7 +192,7 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
                 return Ok(size);
             }
             let cid = ipld_cid_ref(data.last().unwrap())?;
-            node = self.store.read_cbor::<Node>(cid).await?;
+            node = self.store.read_cbor::<Node>(cid).await??;
             height = node.height();
         }
     }
@@ -240,12 +248,12 @@ impl Node {
 }
 
 // TODO: make more efficient
-pub struct Iter<'a, TStore: Store, TCache: Cache, THash: Hash> {
-    list: &'a List<TStore, TCache, THash>,
+pub struct Iter<'a, TStore: Store, THash: Hash> {
+    list: &'a List<TStore, THash>,
     index: usize,
 }
 
-impl<'a, TStore: Store, TCache: Cache, THash: Hash> Iter<'a, TStore, TCache, THash> {
+impl<'a, TStore: Store, THash: Hash> Iter<'a, TStore, THash> {
     pub async fn next(&mut self) -> Result<Option<Ipld>> {
         let elem = self.list.get(self.index).await?;
         self.index += 1;
@@ -253,8 +261,8 @@ impl<'a, TStore: Store, TCache: Cache, THash: Hash> Iter<'a, TStore, TCache, THa
     }
 }
 
-impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
-    pub fn iter<'a>(&'a self) -> Iter<'a, TStore, TCache, THash> {
+impl<TStore: Store, THash: Hash> List<TStore, THash> {
+    pub fn iter<'a>(&'a self) -> Iter<'a, TStore, THash> {
         Iter {
             list: self,
             index: 0,
@@ -266,20 +274,16 @@ impl<TStore: Store, TCache: Cache, THash: Hash> List<TStore, TCache, THash> {
 mod tests {
     use super::*;
     use async_std::task;
-    use libipld::{
-        mock::{MemCache, MemStore},
-        DefaultHash,
-    };
-
-    type MemList = List<MemStore, MemCache, DefaultHash>;
+    use libipld::{DefaultHash as H, MemStore};
+    use std::sync::Arc;
 
     fn int(i: usize) -> Option<Ipld> {
         Some(Ipld::Integer(i as i128))
     }
 
     async fn test_list() -> Result<()> {
-        let store = Arc::new(BlockStore::new(MemStore::default(), MemCache::default()));
-        let mut list = MemList::new(store, 3).await?;
+        let store = Arc::new(MemStore::default());
+        let list = List::<_, H>::new(store, "test_list", 3).await?;
         for i in 0..13 {
             assert_eq!(list.get(i).await?, None);
             assert_eq!(list.len().await?, i);
@@ -306,8 +310,8 @@ mod tests {
 
     async fn test_list_from() -> Result<()> {
         let data: Vec<Ipld> = (0..13).map(|i| Ipld::Integer(i as i128)).collect();
-        let store = Arc::new(BlockStore::new(MemStore::default(), MemCache::default()));
-        let list = MemList::from(store, 3, data.clone()).await?;
+        let store = Arc::new(MemStore::default());
+        let list = List::<_, H>::from(store, "test_list_from", 3, data.clone()).await?;
         let mut data2: Vec<Ipld> = Vec::new();
         let mut iter = list.iter();
         while let Some(elem) = iter.next().await? {
