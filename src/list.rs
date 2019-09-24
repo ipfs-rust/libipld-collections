@@ -275,12 +275,13 @@ mod tests {
     use super::*;
     use async_std::task;
     use libipld::{DefaultHash as H, MemStore};
+    use model::*;
     use std::sync::Arc;
 
     fn int(i: usize) -> Option<Ipld> {
         Some(Ipld::Integer(i as i128))
     }
-
+    
     async fn test_list() -> Result<()> {
         let store = Arc::new(MemStore::default());
         let list = List::<_, H>::new(store, "test_list", 3).await?;
@@ -301,6 +302,33 @@ mod tests {
             assert_eq!(vec.pop()?, int(i));
         }*/
         Ok(())
+    }
+
+    #[test]
+    fn vec_eqv() {
+        const LEN: usize = 25;
+        model! {
+            Model => let mut vec = Vec::new(),
+            Implementation => let list = {
+                let store = MemStore::default();
+                let fut = List::<_, H>::new(store, "test_list", 3);
+                task::block_on(fut).unwrap()
+            },
+            Push(usize)(i in 0..LEN) => {
+                vec.push(Ipld::Integer(i as i128));
+                task::block_on(list.push(Ipld::Integer(i as i128))).unwrap();
+            },
+            Get(usize)(i in 0..LEN) => {
+                let r1 = vec.get(i).cloned();
+                let r2 = task::block_on(list.get(i)).unwrap();
+                assert_eq!(r1, r2);
+            },
+            Len(usize)(_ in 0..LEN) => {
+                let r1 = vec.len();
+                let r2 = task::block_on(list.len()).unwrap();
+                assert_eq!(r1, r2);
+            }
+        }
     }
 
     #[test]
