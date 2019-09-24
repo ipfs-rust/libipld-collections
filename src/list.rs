@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn vec_eqv() {
+    fn list_vec_eqv() {
         const LEN: usize = 25;
         model! {
             Model => let mut vec = Vec::new(),
@@ -327,6 +327,27 @@ mod tests {
                 let r1 = vec.len();
                 let r2 = task::block_on(list.len()).unwrap();
                 assert_eq!(r1, r2);
+            }
+        }
+    }
+
+    #[test]
+    fn list_linearizable() {
+        const LEN: usize = 25;
+        linearizable! {
+            Implementation => let list = {
+                let store = MemStore::default();
+                let fut = List::<_, H>::new(store, "test_list", 3);
+                Shared::new(task::block_on(fut).unwrap())
+            },
+            Push(usize)(i in 0..LEN) -> () {
+                task::block_on(list.push(Ipld::Integer(i as i128))).unwrap();
+            },
+            Get(usize)(i in 0..LEN) -> Option<Ipld> {
+                task::block_on(list.get(i)).unwrap()
+            },
+            Len(usize)(_ in 0..LEN) -> usize {
+                task::block_on(list.len()).unwrap()
             }
         }
     }
