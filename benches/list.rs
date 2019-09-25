@@ -1,7 +1,7 @@
 use async_std::task;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ipld_collections::List;
-use ipld_daemon::BlockStore;
+use ipld_daemon_client::BlockStore;
 use libipld::{BufStore, DefaultHash as H, Ipld, MemStore};
 use std::sync::Arc;
 
@@ -63,7 +63,7 @@ fn from_fs(c: &mut Criterion) {
         data.push(Ipld::Integer(i as i128));
     }
 
-    let store = task::block_on(BlockStore::connect("ipld_collections")).unwrap();
+    let store = task::block_on(BlockStore::connect("/tmp", "ipld_collections")).unwrap();
     let store = Arc::new(BufStore::new(store, 16, 16));
 
     c.bench_function("from fs: 1024xi128; n: 4; width: 256; size: 4096", |b| {
@@ -115,7 +115,7 @@ fn push_buf(c: &mut Criterion) {
 }
 
 fn push_fs(c: &mut Criterion) {
-    let store = task::block_on(BlockStore::connect("ipld_collections")).unwrap();
+    let store = task::block_on(BlockStore::connect("/tmp", "ipld_collections")).unwrap();
     let store = Arc::new(BufStore::new(store, 16, 16));
 
     c.bench_function("push fs: 1024xi128; n: 4; width: 256; size: 4096", |b| {

@@ -1,10 +1,10 @@
 use async_std::task;
 use ipld_collections::{List, Result};
-use ipld_daemon::BlockStore;
+use ipld_daemon_client::BlockStore;
 use libipld::{BufStore, DefaultHash as H, Ipld};
 
 async fn run() -> Result<()> {
-    let store = BlockStore::connect("ipld_collections").await?;
+    let store = BlockStore::connect("/tmp", "ipld_collections").await?;
     let store = BufStore::new(store, 16, 16);
 
     let list = List::<_, H>::new(store, "test", 256).await?;

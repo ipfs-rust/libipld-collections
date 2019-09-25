@@ -13,7 +13,7 @@ libipld = { path = "../rust-ipld" }
 [dev-dependencies]
 async-std = "0.99"
 criterion = "0.3"
-ipld-daemon = { path = "../rust-ipld-daemon" }
+ipld-daemon-client = { path = "../rust-ipld-daemon/client" }
 model = "0.1"
 tempdir = "0.3"
 
