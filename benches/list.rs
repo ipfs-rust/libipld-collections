@@ -132,7 +132,7 @@ fn push_fs(c: &mut Criterion) {
                 for i in 0..1024 {
                     list.push(Ipld::Integer(i as i128)).await.unwrap();
                 }
-                //list.flush().await.unwrap();
+                list.flush().await.unwrap();
             }));
         })
     });
