@@ -281,7 +281,7 @@ mod tests {
     fn int(i: usize) -> Option<Ipld> {
         Some(Ipld::Integer(i as i128))
     }
-    
+
     async fn test_list() -> Result<()> {
         let store = Arc::new(MemStore::default());
         let list = List::<_, H>::new(store, "test_list", 3).await?;
