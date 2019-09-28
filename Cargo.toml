@@ -7,12 +7,12 @@ edition = "2018"
 [dependencies]
 async-trait = "0.1"
 failure = "0.1"
-libipld = { path = "../rust-ipld" }
+libipld = { git = "https://github.com/dvc94ch/rust-ipld" }
 
 [dev-dependencies]
 async-std = "0.99"
 criterion = "0.3"
-ipld-daemon-client = { path = "../rust-ipld-daemon/client" }
+ipld-daemon-client = { git = "https://github.com/dvc94ch/ipld-daemon" }
 model = "0.1"
 tempdir = "0.3"
 

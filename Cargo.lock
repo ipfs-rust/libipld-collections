@@ -342,18 +342,20 @@ dependencies = [
 [[package]]
 name = "dag-cbor"
 version = "0.1.0"
+source = "git+https://github.com/dvc94ch/rust-ipld#195df89087a31397c4a37a07e0694ded8ce0ad02"
 dependencies = [
  "async-std 0.99.8 (git+https://github.com/dvc94ch/async-std)",
  "async-trait 0.1.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "byteorder 1.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "failure 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-io-preview 0.3.0-alpha.18 (registry+https://github.com/rust-lang/crates.io-index)",
- "libipld-base 0.1.0",
+ "libipld-base 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)",
 ]
 
 [[package]]
 name = "dag-cbor-derive"
 version = "0.1.0"
+source = "git+https://github.com/dvc94ch/rust-ipld#195df89087a31397c4a37a07e0694ded8ce0ad02"
 dependencies = [
  "async-trait 0.1.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "proc-macro2 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -590,8 +592,8 @@ dependencies = [
  "async-trait 0.1.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "criterion 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "failure 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "ipld-daemon-client 0.1.0",
- "libipld 0.1.0",
+ "ipld-daemon-client 0.1.0 (git+https://github.com/dvc94ch/ipld-daemon)",
+ "libipld 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)",
  "model 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "tempdir 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -599,12 +601,13 @@ dependencies = [
 [[package]]
 name = "ipld-daemon-client"
 version = "0.1.0"
+source = "git+https://github.com/dvc94ch/ipld-daemon#f0cbb7c2f36c9b5fc9a09ac86c7c0dde9926c744"
 dependencies = [
  "async-filelock 0.1.0 (git+https://github.com/dvc94ch/async-filelock)",
  "async-std 0.99.8 (git+https://github.com/dvc94ch/async-std)",
  "async-trait 0.1.13 (registry+https://github.com/rust-lang/crates.io-index)",
- "ipld-daemon-common 0.1.0",
- "libipld 0.1.0",
+ "ipld-daemon-common 0.1.0 (git+https://github.com/dvc94ch/ipld-daemon)",
+ "libipld 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)",
  "multibase 0.6.0 (git+https://github.com/multiformats/rust-multibase)",
  "whoami 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -612,9 +615,10 @@ dependencies = [
 [[package]]
 name = "ipld-daemon-common"
 version = "0.1.0"
+source = "git+https://github.com/dvc94ch/ipld-daemon#f0cbb7c2f36c9b5fc9a09ac86c7c0dde9926c744"
 dependencies = [
  "async-std 0.99.8 (git+https://github.com/dvc94ch/async-std)",
- "libipld 0.1.0",
+ "libipld 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)",
  "multibase 0.6.0 (git+https://github.com/multiformats/rust-multibase)",
 ]
 
@@ -658,17 +662,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "libipld"
 version = "0.1.0"
+source = "git+https://github.com/dvc94ch/rust-ipld#195df89087a31397c4a37a07e0694ded8ce0ad02"
 dependencies = [
  "async-std 0.99.8 (git+https://github.com/dvc94ch/async-std)",
  "async-trait 0.1.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "byteorder 1.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "cid 0.3.1 (git+https://github.com/dvc94ch/rust-cid?branch=cli)",
- "dag-cbor 0.1.0",
- "dag-cbor-derive 0.1.0",
+ "dag-cbor 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)",
+ "dag-cbor-derive 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)",
  "failure 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-preview 0.3.0-alpha.18 (registry+https://github.com/rust-lang/crates.io-index)",
- "libipld-base 0.1.0",
- "libipld-macro 0.1.0",
+ "libipld-base 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)",
+ "libipld-macro 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)",
  "multibase 0.6.0 (git+https://github.com/multiformats/rust-multibase)",
  "multihash 0.8.1-pre (git+https://github.com/dvc94ch/rust-multihash?branch=cli)",
 ]
@@ -676,6 +681,7 @@ dependencies = [
 [[package]]
 name = "libipld-base"
 version = "0.1.0"
+source = "git+https://github.com/dvc94ch/rust-ipld#195df89087a31397c4a37a07e0694ded8ce0ad02"
 dependencies = [
  "async-trait 0.1.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "cid 0.3.1 (git+https://github.com/dvc94ch/rust-cid?branch=cli)",
@@ -686,8 +692,9 @@ dependencies = [
 [[package]]
 name = "libipld-macro"
 version = "0.1.0"
+source = "git+https://github.com/dvc94ch/rust-ipld#195df89087a31397c4a37a07e0694ded8ce0ad02"
 dependencies = [
- "libipld-base 0.1.0",
+ "libipld-base 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)",
 ]
 
 [[package]]
@@ -1417,6 +1424,8 @@ dependencies = [
 "checksum crypto-mac 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)" = "4434400df11d95d556bac068ddfedd482915eb18fe8bea89bc80b6e4b1c179e5"
 "checksum csv 1.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "37519ccdfd73a75821cac9319d4fce15a81b9fcf75f951df5b9988aa3a0af87d"
 "checksum csv-core 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)" = "9b5cadb6b25c77aeff80ba701712494213f4a8418fcda2ee11b6560c3ad0bf4c"
+"checksum dag-cbor 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)" = "<none>"
+"checksum dag-cbor-derive 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)" = "<none>"
 "checksum digest 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)" = "f3d0c8c8752312f9713efd397ff63acb9f85585afbf179282e720e7704954dd5"
 "checksum either 1.5.3 (registry+https://github.com/rust-lang/crates.io-index)" = "bb1f6b1ce1c140482ea30ddd3335fc0024ac7ee112895426e0a629a6c20adfe3"
 "checksum failure 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "795bd83d3abeb9220f257e597aa0080a508b27533824adf336529648f6abf7e2"
@@ -1443,12 +1452,17 @@ dependencies = [
 "checksum getrandom 0.1.12 (registry+https://github.com/rust-lang/crates.io-index)" = "473a1265acc8ff1e808cd0a1af8cee3c2ee5200916058a2ca113c29f2d903571"
 "checksum integer-encoding 1.0.7 (registry+https://github.com/rust-lang/crates.io-index)" = "1aec89c15e2cfa0f0eae8ca60e03cb10b30d25ea2c0ad7d6be60a95e32729994"
 "checksum iovec 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "dbe6e417e7d0975db6512b90796e8ce223145ac4e33c377e4a42882a0e88bb08"
+"checksum ipld-daemon-client 0.1.0 (git+https://github.com/dvc94ch/ipld-daemon)" = "<none>"
+"checksum ipld-daemon-common 0.1.0 (git+https://github.com/dvc94ch/ipld-daemon)" = "<none>"
 "checksum itertools 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)" = "5b8467d9c1cebe26feb08c640139247fac215782d35371ade9a2136ed6085358"
 "checksum itoa 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)" = "501266b7edd0174f8530248f87f99c88fbe60ca4ef3dd486835b8d8d53136f7f"
 "checksum keccak 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "67c21572b4949434e4fc1e1978b99c5f77064153c59d998bf13ecd96fb5ecba7"
 "checksum kernel32-sys 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "7507624b29483431c0ba2d82aece8ca6cdba9382bff4ddd0f7490560c056098d"
 "checksum lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 "checksum libc 0.2.62 (registry+https://github.com/rust-lang/crates.io-index)" = "34fcd2c08d2f832f376f4173a231990fa5aef4e99fb569867318a227ef4c06ba"
+"checksum libipld 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)" = "<none>"
+"checksum libipld-base 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)" = "<none>"
+"checksum libipld-macro 0.1.0 (git+https://github.com/dvc94ch/rust-ipld)" = "<none>"
 "checksum log 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)" = "14b6052be84e6b71ab17edffc2eeabf5c2c3ae1fdb464aae35ac50c67a44e1f7"
 "checksum memchr 2.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "88579771288728879b57485cc7d6b07d648c9f0141eb955f8ab7f9d45394468e"
 "checksum memoffset 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)" = "ce6075db033bbbb7ee5a0bbd3a3186bbae616f57fb001c485c7ff77955f8177f"
