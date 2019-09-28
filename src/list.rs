@@ -1,8 +1,10 @@
-#![allow(unreachable_code)] // looks like a nightly bug 15.9.19
+#![allow(unreachable_code)] // looks like nightly bug
 use crate::Result;
 use core::marker::PhantomData;
-use dag_cbor_derive::DagCbor;
-use libipld::{Cid, Hash, Ipld, IpldError, Store, StoreCborExt};
+use libipld::error::IpldError;
+use libipld::hash::Hash;
+use libipld::store::{Store, StoreCborExt};
+use libipld::{Cid, DagCbor, Ipld};
 
 pub struct List<TStore, THash> {
     prefix: PhantomData<THash>,
@@ -274,7 +276,7 @@ impl<TStore: Store, THash: Hash> List<TStore, THash> {
 mod tests {
     use super::*;
     use async_std::task;
-    use libipld::{DefaultHash as H, MemStore};
+    use libipld::{store::MemStore, DefaultHash as H};
     use model::*;
     use std::sync::Arc;
 

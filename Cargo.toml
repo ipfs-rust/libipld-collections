@@ -6,7 +6,6 @@ edition = "2018"
 
 [dependencies]
 async-trait = "0.1"
-dag-cbor-derive = { path = "../rust-ipld/dag-cbor-derive" }
 failure = "0.1"
 libipld = { path = "../rust-ipld" }
 

@@ -2,7 +2,8 @@ use async_std::task::block_on;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ipld_collections::List;
 use ipld_daemon_client::BlockStore;
-use libipld::{BufStore, DefaultHash as H, Ipld, MemStore};
+use libipld::store::{BufStore, MemStore};
+use libipld::{DefaultHash as H, Ipld};
 use std::sync::Arc;
 
 fn baseline(c: &mut Criterion) {

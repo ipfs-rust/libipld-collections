@@ -1,8 +1,9 @@
 #![allow(dead_code)] // TODO
 use crate::Result;
 use core::marker::PhantomData;
-use dag_cbor_derive::DagCbor;
-use libipld::{Cid, Hash, Ipld, Store, StoreCborExt};
+use libipld::hash::Hash;
+use libipld::store::{Store, StoreCborExt};
+use libipld::{Cid, DagCbor, Ipld};
 
 pub struct Map<TStore: Store, THash: Hash> {
     prefix: PhantomData<THash>,

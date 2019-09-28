@@ -4,29 +4,28 @@ use failure::Fail;
 pub mod list;
 pub mod map;
 
-pub use list::*;
-pub use map::*;
-
+pub use list::List;
+pub use map::Map;
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Fail)]
 pub enum Error {
     #[fail(display = "{}", _0)]
-    Block(libipld::BlockError),
+    Block(libipld::error::BlockError),
     #[fail(display = "{}", _0)]
-    Ipld(libipld::IpldError),
+    Ipld(libipld::error::IpldError),
     #[fail(display = "Block not found")]
     NotFound(core::option::NoneError),
 }
 
-impl From<libipld::BlockError> for Error {
-    fn from(err: libipld::BlockError) -> Self {
+impl From<libipld::error::BlockError> for Error {
+    fn from(err: libipld::error::BlockError) -> Self {
         Self::Block(err)
     }
 }
 
-impl From<libipld::IpldError> for Error {
-    fn from(err: libipld::IpldError) -> Self {
+impl From<libipld::error::IpldError> for Error {
+    fn from(err: libipld::error::IpldError) -> Self {
         Self::Ipld(err)
     }
 }
