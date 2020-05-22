@@ -67,7 +67,7 @@ pub struct List<S, T: Clone + DagCbor> {
     root: Cid,
 }
 
-impl<S: Store, T: Clone + DagCbor + core::fmt::Debug> List<S, T> {
+impl<S: Store, T: Clone + DagCbor> List<S, T> {
     pub async fn new(store: S, cache_size: usize, width: u32) -> Result<Self> {
         let mut nodes = Cache::new(store, Codec::new(), cache_size);
         let root = nodes.insert(Node::new(width, 0, vec![])).await?;
@@ -95,7 +95,7 @@ impl<S: Store, T: Clone + DagCbor + core::fmt::Debug> List<S, T> {
         // TODO create_batch_with_capacity
         let mut batch = nodes.create_batch();
 
-        let mut items: Vec<Data<T>> = items.map(|value| Data::Value(value)).collect();
+        let mut items: Vec<Data<T>> = items.map(Data::Value).collect();
         let width = width as usize;
         let mut height = 0;
 
@@ -232,7 +232,12 @@ impl<S: Store, T: Clone + DagCbor + core::fmt::Debug> List<S, T> {
         }
     }
 
-    pub fn iter<'a>(&'a mut self) -> Iter<'a, S, T> {
+    pub async fn is_empty(&mut self) -> Result<bool> {
+        let root = self.nodes.get(&self.root).await?;
+        Ok(root.data().is_empty())
+    }
+
+    pub fn iter(&mut self) -> Iter<'_, S, T> {
         Iter {
             list: self,
             index: 0,
@@ -245,7 +250,8 @@ pub struct Iter<'a, S, T: Clone + DagCbor> {
     index: usize,
 }
 
-impl<'a, S: Store, T: Clone + DagCbor + core::fmt::Debug> Iter<'a, S, T> {
+impl<'a, S: Store, T: Clone + DagCbor> Iter<'a, S, T> {
+    #[allow(clippy::should_implement_trait)]
     pub async fn next(&mut self) -> Result<Option<T>> {
         let elem = self.list.get(self.index).await?;
         self.index += 1;
@@ -323,27 +329,4 @@ mod tests {
             }
         }
     }
-
-    /*
-    #[test]
-    fn list_linearizable() {
-        const LEN: usize = 25;
-        linearizable! {
-            Implementation => let list = {
-                let store = MemStore::default();
-                let fut = List::new(store, LEN, 3);
-                Shared::new(task::block_on(fut).unwrap())
-            },
-            Push(usize)(i in 0..LEN) -> () {
-                task::block_on(list.push(i as i64)).unwrap();
-            },
-            Get(usize)(i in 0..LEN) -> Option<i64> {
-                task::block_on(list.get(i)).unwrap()
-            },
-            Len(usize)(_ in 0..LEN) -> usize {
-                task::block_on(list.len()).unwrap()
-            }
-        }
-    }
-    */
 }

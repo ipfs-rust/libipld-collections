@@ -1,6 +1,6 @@
 //use ipfs_embed::{Config, Store};
-use libipld::mem::MemStore;
 use ipld_collections::List;
+use libipld::mem::MemStore;
 
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
