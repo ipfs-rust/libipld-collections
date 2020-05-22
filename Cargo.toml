@@ -6,14 +6,15 @@ edition = "2018"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-async-trait = "0.1"
-failure = "0.1"
-libipld = { git = "https://github.com/dvc94ch/rust-ipld" }
+async-std = "1.5.0"
+ipld-block-builder = { path = "../ipld-block-builder" }
+libipld = "0.2.2"
+thiserror = "1.0.18"
 
 [dev-dependencies]
-async-std = "0.99"
+async-std = { version = "1.5.0", features = ["attributes"] }
 criterion = "0.3"
-ipld-daemon-client = { git = "https://github.com/dvc94ch/ipld-daemon" }
+ipfs-embed = { path = "../ipfs-embed" }
 model = "0.1"
 tempdir = "0.3"
 
@@ -29,4 +30,4 @@ harness = false
 debug = true
 
 [patch.crates-io]
-async-std = { git = "https://github.com/dvc94ch/async-std" }
+libipld = { path = "../rust-ipld" }
