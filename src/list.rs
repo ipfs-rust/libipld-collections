@@ -326,6 +326,11 @@ mod tests {
                 let r1 = vec.len();
                 let r2 = task::block_on(list.len()).unwrap();
                 assert_eq!(r1, r2);
+            },
+            IsEmpty(usize)(_ in 0..LEN) => {
+                let r1 = vec.is_empty();
+                let r2 = task::block_on(list.is_empty()).unwrap();
+                assert_eq!(r1, r2);
             }
         }
     }
