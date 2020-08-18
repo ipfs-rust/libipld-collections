@@ -2,11 +2,10 @@ use ipld_block_builder::{Cache, Codec};
 use libipld::cbor::DagCbor;
 use libipld::cid::Cid;
 use libipld::error::Result;
-use libipld::store::Store;
 use libipld::DagCbor;
 
 #[derive(Clone, Debug, DagCbor)]
-enum Data<T: DagCbor> {
+pub enum Data<T: DagCbor> {
     Value(T),
     Link(Cid),
 }
@@ -30,7 +29,7 @@ impl<T: DagCbor> Data<T> {
 }
 
 #[derive(Clone, Debug, DagCbor)]
-struct Node<T: DagCbor> {
+pub struct Node<T: DagCbor> {
     width: u32,
     height: u32,
     data: Vec<Data<T>>,
@@ -62,38 +61,39 @@ impl<T: DagCbor> Node<T> {
     }
 }
 
-pub struct List<S, T: Clone + DagCbor> {
-    nodes: Cache<S, Codec, Node<T>>,
+pub struct List<C, T> {
+    nodes: C,
+    _phantom: std::marker::PhantomData<T>,
     root: Cid,
 }
 
-impl<S: Store, T: Clone + DagCbor> List<S, T> {
-    pub async fn new(store: S, cache_size: usize, width: u32) -> Result<Self> {
-        let mut nodes = Cache::new(store, Codec::new(), cache_size);
-        let root = nodes.insert(Node::new(width, 0, vec![])).await?;
-        Ok(Self { nodes, root })
+impl<C: Cache<Codec, Node<T>>, T: Send + Sync + Clone + DagCbor> List<C, T> {
+    pub async fn new(nodes_cache: C, width: u32) -> Result<Self> {
+        let root = nodes_cache.insert(Node::new(width, 0, vec![])).await?;
+        Ok(Self {
+            nodes: nodes_cache,
+            _phantom: std::marker::PhantomData,
+            root,
+        })
     }
 
-    pub async fn open(store: S, cache_size: usize, root: Cid) -> Result<Self> {
-        let mut nodes = Cache::new(store, Codec::new(), cache_size);
+    pub async fn open(nodes_cache: C, root: Cid) -> Result<Self> {
         // warm up the cache and make sure it's available
-        nodes.get(&root).await?;
-        Ok(Self { nodes, root })
+        nodes_cache.get(&root).await?;
+        Ok(Self {
+            nodes: nodes_cache,
+            _phantom: std::marker::PhantomData,
+            root,
+        })
     }
 
     pub fn root(&self) -> &Cid {
         &self.root
     }
 
-    pub async fn from(
-        store: S,
-        cache_size: usize,
-        width: u32,
-        items: impl Iterator<Item = T>,
-    ) -> Result<Self> {
-        let mut nodes = Cache::new(store, Codec::new(), cache_size);
+    pub async fn from(nodes_cache: C, width: u32, items: impl Iterator<Item = T>) -> Result<Self> {
         // TODO create_batch_with_capacity
-        let mut batch = nodes.create_batch();
+        let mut batch = nodes_cache.create_batch();
 
         let mut items: Vec<Data<T>> = items.map(Data::Value).collect();
         let width = width as usize;
@@ -108,8 +108,12 @@ impl<S: Store, T: Clone + DagCbor> List<S, T> {
                 items_next.push(Data::Link(cid.clone()));
             }
             if items_next.len() == 1 {
-                let root = nodes.insert_batch(batch).await?;
-                return Ok(Self { nodes, root });
+                let root = nodes_cache.insert_batch(batch).await?;
+                return Ok(Self {
+                    nodes: nodes_cache,
+                    _phantom: std::marker::PhantomData,
+                    root,
+                });
             }
             items = items_next;
             height += 1;
@@ -237,7 +241,7 @@ impl<S: Store, T: Clone + DagCbor> List<S, T> {
         Ok(root.data().is_empty())
     }
 
-    pub fn iter(&mut self) -> Iter<'_, S, T> {
+    pub fn iter(&mut self) -> Iter<'_, C, T> {
         Iter {
             list: self,
             index: 0,
@@ -245,12 +249,12 @@ impl<S: Store, T: Clone + DagCbor> List<S, T> {
     }
 }
 
-pub struct Iter<'a, S, T: Clone + DagCbor> {
-    list: &'a mut List<S, T>,
+pub struct Iter<'a, C, T> {
+    list: &'a mut List<C, T>,
     index: usize,
 }
 
-impl<'a, S: Store, T: Clone + DagCbor> Iter<'a, S, T> {
+impl<'a, C: Cache<Codec, Node<T>>, T: Send + Sync + Clone + DagCbor> Iter<'a, C, T> {
     #[allow(clippy::should_implement_trait)]
     pub async fn next(&mut self) -> Result<Option<T>> {
         let elem = self.list.get(self.index).await?;
@@ -264,12 +268,14 @@ mod tests {
     use super::*;
     use async_std::task;
     use libipld::mem::MemStore;
+    use ipld_block_builder::IpldCache;
     use model::*;
 
     #[async_std::test]
     async fn test_list() -> Result<()> {
         let store = MemStore::default();
-        let mut list = List::new(store, 12, 3).await?;
+        let cache = IpldCache::new(store,Codec::new(),12);
+        let mut list = List::new(cache, 3).await?;
         for i in 0..13 {
             assert_eq!(list.get(i).await?, None);
             assert_eq!(list.len().await?, i);
@@ -293,7 +299,8 @@ mod tests {
     async fn test_list_from() -> Result<()> {
         let data: Vec<_> = (0..13).map(|i| i as i64).collect();
         let store = MemStore::default();
-        let mut list = List::from(store, 12, 3, data.clone().into_iter()).await?;
+        let cache = IpldCache::new(store,Codec::new(),12);
+        let mut list = List::from(cache, 3, data.clone().into_iter()).await?;
         let mut data2 = vec![];
         let mut iter = list.iter();
         while let Some(elem) = iter.next().await? {
@@ -310,7 +317,8 @@ mod tests {
             Model => let mut vec = Vec::new(),
             Implementation => let mut list = {
                 let store = MemStore::default();
-                let fut = List::new(store, LEN, 3);
+                let cache = IpldCache::new(store,Codec::new(),LEN);
+                let fut = List::new(cache, 3);
                 task::block_on(fut).unwrap()
             },
             Push(usize)(i in 0..LEN) => {
