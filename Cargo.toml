@@ -9,7 +9,7 @@ repository = "https://github.com/ipfs-rust/rust-ipld-collections"
 
 [dependencies]
 async-std = "1.5.0"
-ipld-block-builder = "0.3.0"
+ipld-block-builder = "0.4.0"
 libipld = "0.3.0"
 thiserror = "1.0.19"
 
