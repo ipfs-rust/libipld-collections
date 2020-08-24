@@ -1,11 +1,12 @@
 use libipld::cache::Cache;
 use libipld::cache::ReadonlyCache;
+use libipld::cache::{CacheConfig, IpldCache};
 use libipld::cbor::error::LengthOutOfRange;
 use libipld::cbor::DagCbor;
 use libipld::cbor::DagCborCodec;
 use libipld::cid::Cid;
-use libipld::cache::{CacheConfig, IpldCache};
 use libipld::error::Result;
+use libipld::store::Store;
 use libipld::DagCbor;
 
 #[derive(Clone, Debug, DagCbor)]
@@ -243,7 +244,7 @@ where
         Ok(root.data().is_empty())
     }
 
-    pub fn iter(&mut self) -> Iter<'_, C, T> {
+    pub fn iter(&mut self) -> Iter<'_, S, T> {
         Iter {
             list: self,
             index: 0,
@@ -251,8 +252,8 @@ where
     }
 }
 
-pub struct Iter<'a, C, T> {
-    list: &'a mut List<C, T>,
+pub struct Iter<'a, S, T: DagCbor> {
+    list: &'a mut List<S, T>,
     index: usize,
 }
 
