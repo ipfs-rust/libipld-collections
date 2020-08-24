@@ -1,10 +1,10 @@
 use libipld::cache::Cache;
 use libipld::cache::ReadonlyCache;
-use libipld::cache::{CacheConfig, IpldCache};
 use libipld::cbor::error::LengthOutOfRange;
 use libipld::cbor::DagCbor;
 use libipld::cbor::DagCborCodec;
 use libipld::cid::Cid;
+use libipld::cache::{CacheConfig, IpldCache};
 use libipld::error::Result;
 use libipld::DagCbor;
 
