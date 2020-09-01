@@ -1,4 +1,3 @@
-#![feature(const_int_pow)]
 pub mod list;
 pub mod map;
 

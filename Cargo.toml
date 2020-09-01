@@ -10,6 +10,7 @@ repository = "https://github.com/ipfs-rust/rust-ipld-collections"
 [dependencies]
 async-std = "1.5.0"
 libipld = {path = "../libipld"}
+futures = "0.3.5"
 
 [dev-dependencies]
 async-std = { version = "1.5.0", features = ["attributes"] }

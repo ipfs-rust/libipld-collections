@@ -1,47 +1,30 @@
-#![allow(unused_imports, dead_code, unused_macros)]
 use self::InsertError::*;
-// use futures::executor::block_on;
-// use futures::future::{FutureExt, LocalBoxFuture};
-// use ipld_block_builder::{Cache, Codec};
 use libipld::cache::{Cache, CacheConfig, IpldCache, ReadonlyCache};
 use libipld::cbor::error::LengthOutOfRange;
 use libipld::cbor::DagCbor;
 use libipld::cbor::DagCborCodec;
 use libipld::cid::Cid;
 use libipld::error::Result;
-use libipld::mem::MemStore;
 use libipld::multihash;
 use libipld::multihash::Hasher;
 use libipld::multihash::Multihash;
 use libipld::multihash::MultihashDigest;
-use libipld::raw::RawCodec;
 use libipld::store::Store;
 use libipld::DagCbor;
 use std::cmp::PartialEq;
-use std::collections::hash_map::DefaultHasher;
-use std::convert::TryInto;
-use std::fmt::{self, Debug, Display};
+use std::fmt::Debug;
 use std::iter::once;
-use std::sync::{Arc, Mutex};
 
-const BUCKET_SIZE: usize = 1;
+const BUCKET_SIZE: usize = 2;
 const BIT_WIDTH: usize = 3;
-const MAP_LEN: usize = 1;
+const MAP_LEN: usize = 32;
 static HASH_ALG: &str = "sha2";
 // for debugging purposes
-const HASH_LEN: usize = 3;
-
-const fn bytes() -> usize {
-    if cfg!(test) {
-        MAP_LEN
-    } else {
-        2_usize.pow(2_usize.pow(BIT_WIDTH as u32) as u32) / 8
-    }
-}
+const HASH_LEN: usize = 16;
 
 // For testing need a hash with easy collisions
 fn multihash(bytes: &[u8]) -> multihash::Multihash {
-    use multihash::{IdentityHasher, Multihash, Sha2_256};
+    use multihash::{IdentityHasher, Sha2_256};
     if cfg!(test) {
         Multihash::from(IdentityHasher::digest(bytes))
     } else {
@@ -59,20 +42,12 @@ macro_rules! validate {
 
 macro_rules! validate_or_empty {
     ($block:expr) => {
-        if $block.data.len() == 0 && *$block.map != [0; MAP_LEN]
+        if $block.data.len() == 0 && *$block.map != [0; 32]
             || $block.data.len() != 0 && $block.data.len() != popcount_all(&$block.map) as usize
         {
             todo!("Return error: Malformed block");
         }
     };
-}
-
-fn expect_next<T: DagCbor>(path_node: &PathNode<T>) -> PathHusk {
-    use PathNode::*;
-    match path_node {
-        Idx(_) => PathHusk::Block,
-        Block(_) => PathHusk::Idx,
-    }
 }
 
 impl<T: DagCbor> PartialEq<PathHusk> for PathNode<T> {
@@ -89,39 +64,6 @@ impl<T: DagCbor> PartialEq<PathHusk> for PathNode<T> {
 enum PathHusk {
     Idx,
     Block,
-}
-
-macro_rules! valid_path {
-    ($path:expr) => {
-        let mut expected = PathHusk::Block;
-        for elt in $path.iter() {
-            if elt != expected {
-                panic!("Invariant broken.");
-            } else {
-                expected = expect_next(elt);
-            }
-        }
-    };
-}
-
-macro_rules! all_hashnodes_but_last {
-    ($vec:expr) => {
-        // let (mut data_index, _) = $vec.get($vec.len() - 1).unwrap();
-        // if let Element::HashNode(_) = current.data.get(data_index) {
-        //     println!("blks is {:?}", $vec);
-        //     unreachable!();
-        // }
-        // for (parent_data_index, parent_block) in $vec[..$vec.len() - 1].iter().rev() {
-        //     match parent_block.data.get(data_index).unwrap() {
-        //         Element::HashNode(_) => {}
-        //         Element::Bucket(_) => {
-        //             println!("blks is {:?}", $vec);
-        //             unreachable!();
-        //         }
-        //     };
-        //     data_index = *parent_data_index;
-        // }
-    };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,26 +86,18 @@ impl<T: DagCbor> IntoIterator for Path<T> {
 }
 
 impl<T: DagCbor> Path<T> {
+    fn new() -> Self {
+        Path(vec![])
+    }
+    fn record(&mut self, path_node: PathNode<T>) {
+        self.0.push(path_node);
+    }
     fn pop(&mut self) -> Option<PathNode<T>> {
         self.0.pop()
     }
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-    fn initialise_bubble(&mut self) -> (Node<T>, usize) {
-        assert!(self.len() >= 2);
-        let block = if let Some(PathNode::Block(block)) = self.0.pop() {
-            block
-        } else {
-            unreachable!("First element to pop should be a hamt node.")
-        };
-        let index = if let Some(PathNode::Idx(index)) = self.0.pop() {
-            index
-        } else {
-            unreachable!("First element to pop should be a hamt node.")
-        };
-        (block, index)
-    }
+    // fn len(&self) -> usize {
+    //     self.0.len()
+    // }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,25 +106,22 @@ enum Bit {
     One,
 }
 
-// #[derive(Clone, Debug, PartialEq, Eq)]
-// struct Overflow<T: DagCbor>(Vec<Entry<T>>);
-
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum InsertError<T: DagCbor> {
-    Id(Cid),
-    Overflow(Vec<Entry<T>>),
+pub enum InsertError<T: DagCbor> {
+    Id(Entry<T>, Cid, usize),
+    Overflow(Vec<Entry<T>>, usize),
 }
 
 impl<T: DagCbor> InsertError<T> {
-    fn is_id(&self) -> bool {
-        if let Id(_) = self {
+    pub fn is_id(&self) -> bool {
+        if let Id(_, _, _) = self {
             true
         } else {
             false
         }
     }
-    fn is_overflow(&self) -> bool {
-        if let Overflow(_) = self {
+    pub fn is_overflow(&self) -> bool {
+        if let Overflow(_, _) = self {
             true
         } else {
             false
@@ -269,11 +200,117 @@ pub struct Hamt<S, T: DagCbor + Clone> {
     nodes: IpldCache<S, DagCborCodec, Node<T>>,
     root: Cid,
 }
+
+impl<S: Clone, T: Clone + DagCbor> Hamt<S, T> {
+    // async fn depth(&self) -> usize {
+    //     let mut next = vec![self.];
+    //     let mut all = vec![self.];
+    //     let mut left = Hamt::new().await.unwrap();
+    //     let mut right = Hamt::new().await.unwrap();
+    //     self.get(&self.root)
+    // }
+    pub async fn clone(&self) -> Self {
+        Self {
+            hash_alg: self.hash_alg.clone(),
+            bit_width: self.bit_width.clone(),
+            bucket_size: self.bucket_size.clone(),
+            nodes: self.nodes.clone().await,
+            root: self.root.clone(),
+        }
+    }
+}
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
 pub struct Node<T: DagCbor> {
     // map has 2.pow(bit_width) bits, here 256
     map: Box<[u8]>,
     data: Vec<Element<T>>,
+}
+
+impl<T: DagCbor> Node<T> {
+    fn new() -> Self {
+        Self {
+            map: Box::new([0; MAP_LEN]),
+            data: vec![],
+        }
+    }
+    pub fn set(&mut self, mut index: u8, element: Element<T>) {
+        let idx = index as usize;
+        assert!(idx <= 255);
+        if idx >= self.map.len() {
+            index = self.map.len() as u8;
+        }
+        match get_bit(&self.map, index) {
+            Bit::Zero => {
+                set_bit(&mut self.map, index, Bit::One);
+                self.data.insert(idx, element);
+            }
+            Bit::One => {
+                self.data[idx] = element;
+            }
+        }
+    }
+    // return Overflow with the removed elements if inserting element would overflow bucket
+    fn insert(
+        &mut self,
+        level: usize,
+        entry_with_hash: EntryWithHash<T>,
+        bucket_size: usize,
+    ) -> Result<(), InsertError<T>> {
+        use Bit::*;
+        use Element::*;
+        use InsertError::*;
+        let digest = entry_with_hash.hash.digest();
+        let map_index = digest[level];
+        let bit = get_bit(&self.map, map_index);
+        let data_index = popcount(&self.map, map_index) as usize;
+        let EntryWithHash { entry, .. } = entry_with_hash;
+        match bit {
+            Zero => {
+                self.data.insert(data_index, Bucket(vec![entry]));
+                set_bit(&mut self.map, map_index, One);
+                Ok(())
+            }
+            One => {
+                let elt = self
+                    .data
+                    .get_mut(data_index)
+                    .expect("data_index points past the data array");
+                match elt {
+                    HashNode(cid) => Err(Id(entry, cid.clone(), data_index)),
+                    Bucket(ref mut bucket) => {
+                        let found = bucket
+                            .iter_mut()
+                            .find(|elt_mut_ref| elt_mut_ref.key == entry.key);
+                        match found {
+                            Some(elt) => elt.value = entry.value,
+                            None => {
+                                if bucket.len() < bucket_size {
+                                    bucket.push(entry)
+                                } else {
+                                    let mut overflow = vec![entry];
+                                    overflow.append(bucket);
+                                    return Err(Overflow(overflow, data_index));
+                                }
+                            }
+                        }
+                        // todo!("Inserting place has to be sorted.");
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
+    fn insert_all(
+        &mut self,
+        level: usize,
+        queue: &mut Queue<T>,
+        bucket_size: usize,
+    ) -> Result<(), InsertError<T>> {
+        while let Some(entry_with_hash) = queue.pop() {
+            self.insert(level, entry_with_hash, bucket_size)?
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
@@ -288,6 +325,20 @@ pub struct Entry<T: DagCbor> {
     value: Data<T>,
 }
 
+impl<T: DagCbor> Entry<T> {
+    pub fn new(key: Vec<u8>, value: T) -> Self {
+        Entry {
+            key,
+            value: Data::Value(value),
+        }
+    }
+    fn with_hash(self) -> EntryWithHash<T> {
+        let hash = multihash(&self.key);
+        EntryWithHash { entry: self, hash }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Queue<T: DagCbor> {
     entries: Vec<EntryWithHash<T>>,
 }
@@ -302,13 +353,11 @@ impl<T: DagCbor> Queue<T> {
     }
 
     fn add(&mut self, entry: Entry<T>) {
-        let hash = multihash(&entry.key);
-        self.entries.push(EntryWithHash { entry, hash });
+        self.entries.push(entry.with_hash());
     }
 }
 
-// impl<T: DagCbor>
-
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct EntryWithHash<T: DagCbor> {
     entry: Entry<T>,
     hash: Multihash,
@@ -338,22 +387,29 @@ impl<T: DagCbor> Data<T> {
     }
 }
 
-impl<S: Store, T: Clone + DagCbor + Send + Sync> Hamt<S, T>
+impl<S: Store, T: Debug + Clone + DagCbor + Send + Sync> Hamt<S, T>
 where
     S::Codec: Into<DagCborCodec>,
     <S as libipld::store::ReadonlyStore>::Codec: std::convert::From<DagCborCodec>,
 {
     // retrace the path traveled backwards, "bubbling up" the changes
     async fn bubble_up(&mut self, mut path: Path<T>) -> Result<Cid> {
-        let (mut block, mut index) = path.initialise_bubble();
+        use PathNode::{Block, Idx};
+        let mut block = if let Block(block) = path.pop().unwrap() {
+            block
+        } else {
+            unreachable!()
+        };
+        // irrelevant, simply initialise
+        let mut index = 0;
         let iter = path.into_iter().rev();
         let mut cid = self.nodes.insert(block).await?;
         for elt in iter {
             match elt {
-                PathNode::Idx(idx) => {
+                Idx(idx) => {
                     index = idx;
                 }
-                PathNode::Block(node) => {
+                Block(node) => {
                     block = node;
                     block.data[index] = Element::HashNode(cid);
                     cid = self.nodes.insert(block).await?;
@@ -387,15 +443,14 @@ where
         })
     }
 
-    pub async fn get(&mut self, key: Vec<u8>) -> Result<Option<Data<T>>> {
+    pub async fn get(&mut self, key: &Vec<u8>) -> Result<Option<Data<T>>> {
         // TODO calculate correct hash
         let hash = multihash(&key);
         let digest = hash.digest();
 
         let mut current = self.nodes.get(&self.root).await?;
         validate_or_empty!(current);
-        // TODO remove HASH_LEN restriction
-        for index in digest[0..HASH_LEN].iter() {
+        for index in digest.iter() {
             let bit = get_bit(&current.map, *index);
             if let Bit::Zero = bit {
                 return Ok(None);
@@ -406,7 +461,7 @@ where
                 Element::HashNode(cid) => self.nodes.get(&cid).await?,
                 Element::Bucket(bucket) => {
                     for elt in bucket {
-                        if elt.key == key {
+                        if elt.key == *key {
                             let Entry { value, .. } = elt;
                             return Ok(Some(value));
                         }
@@ -418,152 +473,46 @@ where
         }
         Ok(None)
     }
-
     pub fn root(&self) -> &Cid {
         &self.root
     }
-
-
-    // pub async fn insert(&mut self, key: Vec<u8>, value: Data<T>) -> Result<()> {
-    //     // let nodes = &mut self.nodes;
-    //     // TODO calculate correct hash
-    //     let hash = multihash(&key);
-    //     let digest = &hash.digest()[0..HASH_LEN];
-    //     // start from root going down
-    //     // cid points to block
-    //     let mut entry_queue: Queue<T> = vec![EntryWithHash {
-    //         digest,
-    //         entry: Entry { digest, key, value },
-    //     }];
-    //     let mut hash_queue = vec![hash];
-    //     let mut current = self.nodes.get(&self.root).await?;
-    //     // validate_or_empty!(current);
-    //     // hash_queue.push(hash);
-    //     // let mut cid_next = self.root.clone();
-    //     let mut blks = vec![];
-    //     // let mut reinsert = vec![];
-    //     // let entry = ;
-    //     for lvl in 0..HASH_LEN {
-    //         match status {
-    //             Success => {
-    //                 blks.push((data_index, current));
-    //                 break;
-    //             }
-    //             Id(cid) => {
-    //                 // fetch next block, put on stack
-    //                 blks.push((
-    //                     data_index,
-    //                     std::mem::replace(&mut current, self.nodes.get(&cid).await?),
-    //                 ));
-    //                 validate!(current);
-    //             }
-    //             Overflow(mut overflowed) => {
-    //                 // extract blocks
-    //                 // mutate to empty HashNode, put on stack
-    //                 // TODO: reinsert the elements
-    //                 entry_queue.append(&mut overflowed);
-    //                 // hash_queue.extend(overflowed.iter().map(|elt| {
-    //                 //     let Entry { key, .. } = elt;
-    //                 //     self::digest(key)
-    //                 //     // &hash.digest()[0..HASH_LEN]
-    //                 // }));
-    //                 blks.push((data_index, std::mem::replace(&mut current, Node::new())));
-    //             }
-    //         }
-    //         //TODO: move this up into insert fn on hamt
-    //         if lvl == HASH_LEN - 1 {
-    //             // return Err(());
-    //             todo!("Output error due to maximum collision depth reached");
-    //         }
-    //     }
-    //     // insert the extracted elements
-    //     // first block special
-    //     let (mut data_index, current) = blks.pop().unwrap();
-
-    //     // let mut replace_with = Element::HashNode(propagate!(nodes.insert(current).await));
-    //     let mut new_cid = self.nodes.insert(current).await?;
-    //     // recalculate cids recursively
-    //     for (parent_data_index, mut parent_block) in blks.into_iter().rev() {
-    //         match parent_block.data.get_mut(data_index).unwrap() {
-    //             Element::HashNode(old_cid) => {
-    //                 *old_cid = new_cid;
-    //             }
-    //             new_hashnode @ Element::Bucket(_) => {
-    //                 *new_hashnode = Element::HashNode(new_cid);
-    //             }
-    //         };
-    //         data_index = parent_data_index;
-    //         new_cid = self.nodes.insert(parent_block).await?;
-    //     }
-    //     self.root = new_cid;
-    //     Ok(())
-    // }
-}
-
-impl<T: DagCbor> Node<T> {
-    fn new() -> Self {
-        Self {
-            map: Box::new([0; bytes()]),
-            data: vec![],
-        }
-    }
-
-    // return Overflow with the removed elements if inserting element would overflow bucket
-    fn insert(
-        &mut self,
-        level: usize,
-        entry_with_hash: EntryWithHash<T>,
-        bucket_size: usize,
-    ) -> Result<(),InsertError<T>> {
-        use Bit::*;
-        use Element::*;
-        use InsertError::*;
-        let hash = entry_with_hash.hash.digest();
-        let map_index = hash[level];
-        let bit = get_bit(&self.map, map_index);
-        let data_index = popcount(&self.map, map_index) as usize;
-        let EntryWithHash { entry, .. } = entry_with_hash;
-        match bit {
-            Zero => {
-                self.data.insert(data_index, Bucket(vec![entry]));
-                set_bit(&mut self.map, map_index, One);
-                Ok(())
-            }
-            One => {
-                let elt = self
-                    .data
-                    .get_mut(data_index)
-                    .expect("data_index points past the data array");
-                match elt {
-                    HashNode(cid) => Err(Id(cid.clone())),
-                    Bucket(ref mut bucket) => {
-                        if bucket.len() < bucket_size {
-                            let found = bucket
-                                .iter_mut()
-                                .find(|elt_mut_ref| elt_mut_ref.key == entry.key);
-                            match found {
-                                Some(elt) => elt.value = entry.value,
-                                None => bucket.push(entry),
-                            }
-                            // todo!("Inserting place has to be sorted.");
-                            println!("Insert not yet sorted.");
-                            Ok(())
-                        } else {
-                            // add to elements later extracted
-                            let mut overflowed = vec![entry];
-                            overflowed.append(bucket);
-                            Err(Overflow(overflowed))
-                        }
+    pub async fn insert(&mut self, entry: Entry<T>) -> Result<()> {
+        use PathNode::{Block, Idx};
+        let mut queue = Queue::new();
+        let mut path = Path::new();
+        queue.add(entry);
+        // start from root going down
+        let mut current = self.nodes.get(&self.root).await?;
+        validate_or_empty!(current);
+        for lvl in 0..HASH_LEN {
+            match current.insert_all(lvl, &mut queue, self.bucket_size) {
+                Ok(_) => {
+                    path.record(Block(current));
+                    break;
+                }
+                Err(Id(entry, cid, data_index)) => {
+                    path.record(Block(current));
+                    path.record(Idx(data_index));
+                    queue.add(entry);
+                    current = self.nodes.get(&cid).await?;
+                    validate!(current);
+                }
+                Err(Overflow(overflow, data_index)) => {
+                    for elt in overflow {
+                        queue.add(elt);
                     }
+                    path.record(Block(current));
+                    path.record(Idx(data_index));
+                    current = Node::new();
                 }
             }
+            if lvl == HASH_LEN - 1 {
+                // return Err(());
+                todo!("Output error due to maximum collision depth reached");
+            }
         }
-    }
-
-    fn insert_all(&mut self, level: usize,queue: &mut Queue<T>) -> Result<(),InsertError<T>> {
-        while let Some(entry_with_hash) = queue.pop() {
-            self.insert(level,entry_with_hash,3)?
-        }
+        // recalculate cids recursively
+        self.root = self.bubble_up(path).await?;
         Ok(())
     }
 }
@@ -571,21 +520,9 @@ impl<T: DagCbor> Node<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_std::task;
-    use libipld::block::Block;
+    use futures::executor::block_on;
     use libipld::mem::MemStore;
-    use libipld::store::ReadonlyStore;
-    use libipld::store::StoreResult;
-    // use libipld::store::Visibility;
-    use std::collections::HashMap;
-    // fn create_hamt() -> Hamt {
-    //     let store = MemStore::new();
-    //     let config = CacheConfig::new();
-    //     Hamt::new(store,Codec::new(),)
-    // }
-
-    // use proptest_derive::Arbitrary;
-    // use model::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_popcount() {
@@ -599,7 +536,6 @@ mod tests {
         assert_eq!(popcount(&[0b0000_0111], 7), 2);
         assert_eq!(popcount(&[0b0000_1000], 7), 1);
     }
-    use proptest::prelude::*;
 
     fn strat_bit_value() -> impl Strategy<Value = Bit> {
         prop_oneof![Just(Bit::Zero), Just(Bit::One),]
@@ -610,26 +546,6 @@ mod tests {
             let len = vec.len();
             (Just(vec), 8..(len * 8) as u8)
         })
-    }
-
-    fn first_nonzero_to_zero(bytes: &mut [u8]) {
-        for byte in bytes {
-            if *byte != 0 {
-                let mut shifts = 0u8;
-                let original = *byte;
-                let mut larger_copy = *byte as u16;
-                loop {
-                    *byte <<= 1;
-                    larger_copy <<= 1;
-                    shifts += 1;
-                    if larger_copy != *byte as u16 {
-                        break;
-                    }
-                }
-                *byte >>= shifts;
-                assert!((original - *byte) % 2 == 0);
-            }
-        }
     }
 
     proptest! {
@@ -667,113 +583,115 @@ mod tests {
         assert_eq!(get_bit(&[0b0100_0000], 1), Bit::One);
         assert_eq!(get_bit(&[0b1000_0000], 0), Bit::One);
     }
-    // fn insert(
-    //     &mut self,
-    //     level: usize,
-    //     entry_with_hash: EntryWithHash<T>,
-    //     bucket_size: usize,
-    // ) -> Insert<T>
-    fn create_entry(val: u8) -> EntryWithHash<u8> {
-        let entry = Entry {
-            key: vec![val],
-            value: Data::Value(val),
-        };
-        let multihash = multihash(&entry.key);
-        EntryWithHash {
-            hash: multihash,
-            entry,
-        }
-    }
-    fn create_colliding_entry(val: u8) -> EntryWithHash<u8> {
-        let multihash = multihash(&[0_u8]);
-        let entry = Entry {
-            key: vec![val],
-            value: Data::Value(val),
-        };
-        EntryWithHash {
-            hash: multihash,
-            entry,
-        }
-    }
-    #[test]
-    fn test_insert_into_node() {
-        use super::InsertError::*;
-        let mut node = Node::<u8> {
+
+    fn dummy_node() -> Node<u8> {
+        Node {
             map: Box::new([0_u8]),
             data: vec![],
-        };
-        assert_eq!(node.insert(0, create_colliding_entry(0), 3), Ok(()));
-        assert_eq!(node.insert(0, create_colliding_entry(1), 3), Ok(()));
-        assert_eq!(node.insert(0, create_colliding_entry(1), 3), Ok(()));
-        assert_eq!(node.insert(0, create_colliding_entry(2), 3), Ok(()));
-        assert!(node.insert(0, create_colliding_entry(2), 3).unwrap_err().is_overflow());
+        }
     }
-    #[test]
-    fn test_insert_into_hamt() {
-        use super::InsertError::*;
+
+    async fn dummy_hamt() -> Hamt<MemStore<DagCborCodec, Multihash>, u8> {
         let store = MemStore::<DagCborCodec, Multihash>::new();
         let config = CacheConfig::new(store, DagCborCodec);
-        // let cache = IpldCache::<_, DagCborCodec, Multihash>::new(config);
-        // let mut hamt = Hamt::new(config);
-        // let node = Node {data:};
-        // let cid =
-        // let cache = IpldCache::new(config);
-        let mut node = Node::<u8> {
-            map: Box::new([0_u8]),
-            data: vec![],
-        };
-        assert_eq!(node.insert(0, create_colliding_entry(0), 3), Ok(()));
-        assert_eq!(node.insert(0, create_colliding_entry(1), 3), Ok(()));
-        assert_eq!(node.insert(0, create_colliding_entry(1), 3), Ok(()));
-        assert_eq!(node.insert(0, create_colliding_entry(2), 3), Ok(()));
-        assert!(node.insert(0, create_colliding_entry(2), 3).unwrap_err().is_overflow());
-        // dbg!(node.insert(0, create_colliding_entry(1), 3));
-        // dbg!(node.insert(0, create_entry(1), 3));
-        // dbg!(node);
-        // node.insert(0, create_colliding_entry(0), 1);
-        // dbg!(node.insert(0, create_colliding_entry(1), 1));
-        // dbg!(multihash);
+        Hamt::new(config).await.unwrap()
     }
 
-    #[derive(Debug, Clone)]
-    struct MemCache<T> {
-        entries: Vec<T>,
+    #[test]
+    fn test_insert_into_node() {
+        let mut node = dummy_node();
+        assert_eq!(
+            node.insert(0, Entry::new(vec![0, 0, 0], 0).with_hash(), 3),
+            Ok(())
+        );
+        assert_eq!(
+            node.insert(0, Entry::new(vec![0, 0, 1], 0).with_hash(), 3),
+            Ok(())
+        );
+        assert_eq!(
+            node.insert(0, Entry::new(vec![0, 0, 2], 1).with_hash(), 3),
+            Ok(())
+        );
+        assert!(node
+            .insert(0, Entry::new(vec![0, 0, 3], 3).with_hash(), 3)
+            .unwrap_err()
+            .is_overflow());
     }
 
-    // proptest! {
-    //     #[test]
-    //     fn test_hamt_set_and_get(batch in prop::collection::vec((prop::collection::vec(0..2u8,HASH_LEN),0..1u64), HASH_LEN)) {
-    //         let store = DummyStore::new();
-    //         let mut hamt = block_on(Hamt::new(store, 5)).unwrap();
-    //         let _ = block_on(test_batch_hamt_set_and_get(&mut hamt,batch)).unwrap();
-    //         dbg!(hamt.nodes);
-    //     }
-    // }
+    #[async_std::test]
+    async fn test_bubble_up() {
+        let mut hamt = dummy_hamt().await;
+        let mut node1 = dummy_node();
+        let mut node2 = dummy_node();
+        node1.set(0, Element::Bucket(vec![]));
+        let cid = hamt.nodes.insert(node1).await.unwrap();
+        node2.set(0, Element::HashNode(cid));
+        let cid = hamt.nodes.insert(node2).await.unwrap();
+        hamt.root = cid;
 
-    // #[test]
-    // fn debug_hamt_set_and_get() {
-    //     let batch = vec![(vec![0, 0, 0], 0), (vec![0, 0, 1], 0), (vec![0, 0, 1], 0)];
-    //     // let batch = vec![(vec![0, 0, 0], 0)];
-    //     let store = DummyStore::new();
-    //     let mut hamt = block_on(Hamt::new(store, 5)).unwrap();
-    //     let _ = block_on(test_batch_hamt_set_and_get(&mut hamt, batch)).unwrap();
-    //     // dbg!(hamt.nodes);
-    // }
-    // #[async_std::test]
-    // async fn test_batch_hamt_set_and_get<S: Store>(
-    //     hamt: &mut Hamt<S, u64>,
-    //     batch: Vec<(Vec<u8>, u64)>,
-    // ) -> Result<()> {
-    //     for elt in batch.into_iter() {
-    //         let key = elt.0;
-    //         let val = elt.1.clone();
-    //         hamt.insert(key.clone(), Data::Value(val)).await?;
-    // println!("{:?}",hamt);
-    // let elt = hamt.get(key).await?;
-    // assert_eq!(elt, Some(Data::Value(val)));
-    //     }
-    //     Ok(())
-    // }
+        let mut hamt_clone = dummy_hamt().await;
+        let mut node1_clone = dummy_node();
+        node1_clone.set(0, Element::Bucket(vec![]));
+        let mut node2_clone = dummy_node();
+        let mut path = Path::new();
+        node2_clone.set(0, Element::Bucket(vec![]));
+        path.record(PathNode::Block(node2_clone));
+        path.record(PathNode::Idx(0));
+        path.record(PathNode::Block(node1_clone));
+        let cid = hamt_clone.bubble_up(path).await.unwrap();
+        hamt_clone.root = cid;
+
+        assert_eq!(hamt.root, hamt_clone.root);
+        let block = hamt.nodes.get(&hamt.root).await.unwrap();
+        let block_compare = hamt_clone.nodes.get(&hamt_clone.root).await.unwrap();
+        assert_eq!(block, block_compare);
+    }
+
+    #[async_std::test]
+    async fn test_insert_into_hamt() {
+        let mut hamt = dummy_hamt().await;
+        let entry1 = Entry::new(vec![0, 0, 0], 0);
+        let entry2 = Entry::new(vec![0, 0, 1], 0);
+        let entry3 = Entry::new(vec![0, 0, 2], 0);
+        let entry4 = Entry::new(vec![0, 0, 3], 0);
+        let entries = vec![entry1, entry2, entry3, entry4];
+        let copy = entries.clone();
+        for entry in entries {
+            hamt.insert(entry).await.unwrap();
+        }
+        for entry in copy {
+            assert_eq!(Some(entry.value), hamt.get(&entry.key).await.unwrap());
+        }
+    }
+    proptest! {
+        #[test]
+        fn test_hamt_set_and_get(batch in prop::collection::vec((prop::collection::vec(0..=255u8, 3), 0..1u8), 40)) {
+            let mut hamt = block_on(dummy_hamt());
+            let _ = block_on(test_batch_hamt_set_and_get(&mut hamt, batch)).unwrap();
+        }
+    }
+
+    async fn test_batch_hamt_set_and_get<S: Store>(
+        hamt: &mut Hamt<S, u8>,
+        batch: Vec<(Vec<u8>, u8)>,
+    ) -> Result<()>
+    where
+        S::Codec: Into<DagCborCodec>,
+        <S as libipld::store::ReadonlyStore>::Codec: std::convert::From<DagCborCodec>,
+    {
+        for elt in batch.into_iter() {
+            let key = elt.0;
+            let val = elt.1.clone();
+            hamt.insert(Entry {
+                key: key.clone(),
+                value: Data::Value(val),
+            })
+            .await?;
+            let elt = hamt.get(&key).await?;
+            assert_eq!(elt, Some(Data::Value(val)));
+        }
+        Ok(())
+    }
 }
 
 // pub async fn del(&mut self, key: Vec<u8>) -> Result<()> {
