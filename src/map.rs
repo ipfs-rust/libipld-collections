@@ -1,6 +1,5 @@
 use self::InsertError::*;
 use libipld::cache::{Cache, CacheConfig, IpldCache, ReadonlyCache};
-use libipld::cbor::error::LengthOutOfRange;
 use libipld::cbor::DagCbor;
 use libipld::cbor::DagCborCodec;
 use libipld::cid::Cid;
@@ -23,13 +22,16 @@ static HASH_ALG: &str = "sha2";
 const HASH_LEN: usize = 16;
 
 // For testing need a hash with easy collisions
-fn multihash(bytes: &[u8]) -> multihash::Multihash {
+/*fn multihash(bytes: &[u8]) -> multihash::Multihash {
     use multihash::{IdentityHasher, Sha2_256};
     if cfg!(test) {
         Multihash::from(IdentityHasher::digest(bytes))
     } else {
         Multihash::from(Sha2_256::digest(bytes))
     }
+}*/
+fn multihash(bytes: &[u8]) -> multihash::Multihash {
+    Multihash::from(multihash::Sha2_256::digest(bytes))
 }
 
 macro_rules! validate {
@@ -192,7 +194,7 @@ fn set_bit(map: &mut [u8], bit: u8, val: Bit) {
     }
 }
 
-#[derive(Debug)]
+//#[derive(Debug)]
 pub struct Hamt<S, T: DagCbor + Clone> {
     hash_alg: String,
     bit_width: usize,
@@ -209,7 +211,7 @@ impl<S: Clone, T: Clone + DagCbor> Hamt<S, T> {
     //     let mut right = Hamt::new().await.unwrap();
     //     self.get(&self.root)
     // }
-    pub async fn clone(&self) -> Self {
+    /*pub async fn clone(&self) -> Self {
         Self {
             hash_alg: self.hash_alg.clone(),
             bit_width: self.bit_width.clone(),
@@ -217,7 +219,7 @@ impl<S: Clone, T: Clone + DagCbor> Hamt<S, T> {
             nodes: self.nodes.clone().await,
             root: self.root.clone(),
         }
-    }
+    }*/
 }
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
 pub struct Node<T: DagCbor> {
@@ -443,7 +445,7 @@ where
         })
     }
 
-    pub async fn get(&mut self, key: &Vec<u8>) -> Result<Option<Data<T>>> {
+    pub async fn get(&mut self, key: &[u8]) -> Result<Option<Data<T>>> {
         // TODO calculate correct hash
         let hash = multihash(&key);
         let digest = hash.digest();
@@ -461,7 +463,7 @@ where
                 Element::HashNode(cid) => self.nodes.get(&cid).await?,
                 Element::Bucket(bucket) => {
                     for elt in bucket {
-                        if elt.key == *key {
+                        if elt.key.as_slice() == key {
                             let Entry { value, .. } = elt;
                             return Ok(Some(value));
                         }
@@ -520,7 +522,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::executor::block_on;
+    use async_std::task;
     use libipld::mem::MemStore;
     use proptest::prelude::*;
 
@@ -666,8 +668,8 @@ mod tests {
     proptest! {
         #[test]
         fn test_hamt_set_and_get(batch in prop::collection::vec((prop::collection::vec(0..=255u8, 3), 0..1u8), 40)) {
-            let mut hamt = block_on(dummy_hamt());
-            let _ = block_on(test_batch_hamt_set_and_get(&mut hamt, batch)).unwrap();
+            let mut hamt = task::block_on(dummy_hamt());
+            let _ = task::block_on(test_batch_hamt_set_and_get(&mut hamt, batch)).unwrap();
         }
     }
 
