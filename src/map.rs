@@ -1,4 +1,6 @@
-use self::InsertError::*;
+use Bit::{One, Zero};
+use InsertError::{Id, Overflow};
+
 use libipld::cache::{Cache, CacheConfig, IpldCache, ReadonlyCache};
 use libipld::cbor::error::LengthOutOfRange;
 use libipld::cbor::DagCbor;
@@ -7,8 +9,6 @@ use libipld::cid::Cid;
 use libipld::error::Result;
 use libipld::multihash;
 use libipld::multihash::Hasher;
-use libipld::multihash::Multihash;
-use libipld::multihash::MultihashDigest;
 use libipld::store::Store;
 use libipld::DagCbor;
 use std::cmp::PartialEq;
@@ -16,19 +16,19 @@ use std::fmt::Debug;
 use std::iter::once;
 
 const BUCKET_SIZE: usize = 2;
-const BIT_WIDTH: usize = 3;
+// const BIT_WIDTH: usize = 3;
 const MAP_LEN: usize = 32;
-static HASH_ALG: &str = "sha2";
+// static HASH_ALG: &str = "sha2";
 // for debugging purposes
 const HASH_LEN: usize = 16;
 
 // For testing need a hash with easy collisions
-fn multihash(bytes: &[u8]) -> multihash::Multihash {
-    use multihash::{IdentityHasher, Sha2_256};
+fn hash(bytes: &[u8]) -> Vec<u8> {
+    use multihash::{Identity256, Sha2_256};
     if cfg!(test) {
-        Multihash::from(IdentityHasher::digest(bytes))
+        Identity256::digest(bytes).as_ref().to_vec()
     } else {
-        Multihash::from(Sha2_256::digest(bytes))
+        Sha2_256::digest(bytes).as_ref().to_vec()
     }
 }
 
@@ -50,22 +50,6 @@ macro_rules! validate_or_empty {
     };
 }
 
-impl<T: DagCbor> PartialEq<PathHusk> for PathNode<T> {
-    fn eq(&self, other: &PathHusk) -> bool {
-        match self {
-            PathNode::Block(_) if *other == PathHusk::Block => true,
-            PathNode::Idx(_) if *other == PathHusk::Idx => true,
-            _ => false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PathHusk {
-    Idx,
-    Block,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PathNode<T: DagCbor> {
     Idx(usize),
@@ -73,7 +57,7 @@ enum PathNode<T: DagCbor> {
 }
 
 // all the information needed to retrace the path down the tree, to "bubble up" changes
-// elements should switch from cid -> block -> idx -> cid -> ...
+// elements should alternate: block -> idx -> block -> idx -> ... -> block
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Path<T: DagCbor>(Vec<PathNode<T>>);
 
@@ -92,12 +76,6 @@ impl<T: DagCbor> Path<T> {
     fn record(&mut self, path_node: PathNode<T>) {
         self.0.push(path_node);
     }
-    fn pop(&mut self) -> Option<PathNode<T>> {
-        self.0.pop()
-    }
-    // fn len(&self) -> usize {
-    //     self.0.len()
-    // }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,20 +85,21 @@ enum Bit {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum InsertError<T: DagCbor> {
+enum InsertError<T: DagCbor> {
     Id(Entry<T>, Cid, usize),
     Overflow(Vec<Entry<T>>, usize),
 }
 
+#[cfg(test)]
 impl<T: DagCbor> InsertError<T> {
-    pub fn is_id(&self) -> bool {
+    fn is_id(&self) -> bool {
         if let Id(_, _, _) = self {
             true
         } else {
             false
         }
     }
-    pub fn is_overflow(&self) -> bool {
+    fn is_overflow(&self) -> bool {
         if let Overflow(_, _) = self {
             true
         } else {
@@ -192,35 +171,28 @@ fn set_bit(map: &mut [u8], bit: u8, val: Bit) {
     }
 }
 
-#[derive(Debug)]
-pub struct Hamt<S, T: DagCbor + Clone> {
-    hash_alg: String,
-    bit_width: usize,
+pub struct Hamt<S, T: DagCbor> {
+    // hash_alg: String,
+    // bit_width: usize,
     bucket_size: usize,
     nodes: IpldCache<S, DagCborCodec, Node<T>>,
     root: Cid,
 }
 
 impl<S: Clone, T: Clone + DagCbor> Hamt<S, T> {
-    // async fn depth(&self) -> usize {
-    //     let mut next = vec![self.];
-    //     let mut all = vec![self.];
-    //     let mut left = Hamt::new().await.unwrap();
-    //     let mut right = Hamt::new().await.unwrap();
-    //     self.get(&self.root)
-    // }
     pub async fn clone(&self) -> Self {
         Self {
-            hash_alg: self.hash_alg.clone(),
-            bit_width: self.bit_width.clone(),
-            bucket_size: self.bucket_size.clone(),
+            // hash_alg: self.hash_alg.clone(),
+            // bit_width: self.bit_width,
+            bucket_size: self.bucket_size,
             nodes: self.nodes.clone().await,
             root: self.root.clone(),
         }
     }
 }
+
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
-pub struct Node<T: DagCbor> {
+struct Node<T: DagCbor> {
     // map has 2.pow(bit_width) bits, here 256
     map: Box<[u8]>,
     data: Vec<Element<T>>,
@@ -233,18 +205,19 @@ impl<T: DagCbor> Node<T> {
             data: vec![],
         }
     }
-    pub fn set(&mut self, mut index: u8, element: Element<T>) {
+    #[cfg(test)]
+    fn set(&mut self, mut index: u8, element: Element<T>) {
         let idx = index as usize;
         assert!(idx <= 255);
         if idx >= self.map.len() {
             index = self.map.len() as u8;
         }
         match get_bit(&self.map, index) {
-            Bit::Zero => {
-                set_bit(&mut self.map, index, Bit::One);
+            Zero => {
+                set_bit(&mut self.map, index, One);
                 self.data.insert(idx, element);
             }
-            Bit::One => {
+            One => {
                 self.data[idx] = element;
             }
         }
@@ -256,17 +229,14 @@ impl<T: DagCbor> Node<T> {
         entry_with_hash: EntryWithHash<T>,
         bucket_size: usize,
     ) -> Result<(), InsertError<T>> {
-        use Bit::*;
-        use Element::*;
-        use InsertError::*;
-        let digest = entry_with_hash.hash.digest();
-        let map_index = digest[level];
+        let hash = entry_with_hash.hash;
+        let map_index = hash[level];
         let bit = get_bit(&self.map, map_index);
         let data_index = popcount(&self.map, map_index) as usize;
         let EntryWithHash { entry, .. } = entry_with_hash;
         match bit {
             Zero => {
-                self.data.insert(data_index, Bucket(vec![entry]));
+                self.data.insert(data_index, Element::Bucket(vec![entry]));
                 set_bit(&mut self.map, map_index, One);
                 Ok(())
             }
@@ -276,8 +246,8 @@ impl<T: DagCbor> Node<T> {
                     .get_mut(data_index)
                     .expect("data_index points past the data array");
                 match elt {
-                    HashNode(cid) => Err(Id(entry, cid.clone(), data_index)),
-                    Bucket(ref mut bucket) => {
+                    Element::HashNode(cid) => Err(Id(entry, cid.clone(), data_index)),
+                    Element::Bucket(ref mut bucket) => {
                         let found = bucket
                             .iter_mut()
                             .find(|elt_mut_ref| elt_mut_ref.key == entry.key);
@@ -306,7 +276,7 @@ impl<T: DagCbor> Node<T> {
         queue: &mut Queue<T>,
         bucket_size: usize,
     ) -> Result<(), InsertError<T>> {
-        while let Some(entry_with_hash) = queue.pop() {
+        while let Some(entry_with_hash) = queue.take() {
             self.insert(level, entry_with_hash, bucket_size)?
         }
         Ok(())
@@ -314,26 +284,23 @@ impl<T: DagCbor> Node<T> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
-pub enum Element<T: DagCbor> {
+enum Element<T: DagCbor> {
     HashNode(Cid),
     Bucket(Vec<Entry<T>>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
-pub struct Entry<T: DagCbor> {
+struct Entry<T: DagCbor> {
     key: Vec<u8>,
-    value: Data<T>,
+    value: T,
 }
 
 impl<T: DagCbor> Entry<T> {
     pub fn new(key: Vec<u8>, value: T) -> Self {
-        Entry {
-            key,
-            value: Data::Value(value),
-        }
+        Entry { key, value }
     }
     fn with_hash(self) -> EntryWithHash<T> {
-        let hash = multihash(&self.key);
+        let hash = hash(&self.key);
         EntryWithHash { entry: self, hash }
     }
 }
@@ -347,69 +314,42 @@ impl<T: DagCbor> Queue<T> {
     fn new() -> Self {
         Self { entries: vec![] }
     }
-
-    fn pop(&mut self) -> Option<EntryWithHash<T>> {
+    fn take(&mut self) -> Option<EntryWithHash<T>> {
         self.entries.pop()
     }
-
     fn add(&mut self, entry: Entry<T>) {
-        self.entries.push(entry.with_hash());
+        self.entries.insert(0, entry.with_hash());
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct EntryWithHash<T: DagCbor> {
     entry: Entry<T>,
-    hash: Multihash,
+    hash: Vec<u8>,
 }
 
-#[derive(Clone, Debug, DagCbor, PartialEq, Eq)]
-pub enum Data<T: DagCbor> {
-    Value(T),
-    Link(Cid),
-}
-
-impl<T: DagCbor> Data<T> {
-    pub fn value(&self) -> Option<&T> {
-        if let Self::Value(value) = self {
-            Some(value)
-        } else {
-            None
-        }
-    }
-
-    pub fn cid(&self) -> Option<&Cid> {
-        if let Self::Link(cid) = self {
-            Some(cid)
-        } else {
-            None
-        }
-    }
-}
-
-impl<S: Store, T: Debug + Clone + DagCbor + Send + Sync> Hamt<S, T>
+impl<S: Store, T: Clone + DagCbor + Send + Sync> Hamt<S, T>
 where
     S::Codec: Into<DagCborCodec>,
     <S as libipld::store::ReadonlyStore>::Codec: std::convert::From<DagCborCodec>,
 {
     // retrace the path traveled backwards, "bubbling up" the changes
-    async fn bubble_up(&mut self, mut path: Path<T>) -> Result<Cid> {
-        use PathNode::{Block, Idx};
-        let mut block = if let Block(block) = path.pop().unwrap() {
+    async fn bubble_up(&mut self, path: Path<T>) -> Result<Cid> {
+        let mut path = path.into_iter().rev();
+        let mut block = if let Some(PathNode::Block(block)) = path.next() {
             block
         } else {
             unreachable!()
         };
         // irrelevant, simply initialise
         let mut index = 0;
-        let iter = path.into_iter().rev();
         let mut cid = self.nodes.insert(block).await?;
-        for elt in iter {
+        for elt in path {
             match elt {
-                Idx(idx) => {
+                PathNode::Idx(idx) => {
                     index = idx;
                 }
-                Block(node) => {
+                PathNode::Block(node) => {
                     block = node;
                     block.data[index] = Element::HashNode(cid);
                     cid = self.nodes.insert(block).await?;
@@ -422,9 +362,9 @@ where
         let cache = IpldCache::new(config);
         let root = cache.insert(Node::new()).await?;
         Ok(Self {
-            hash_alg: HASH_ALG.to_string(),
+            // hash_alg: HASH_ALG.to_string(),
             bucket_size: BUCKET_SIZE,
-            bit_width: BIT_WIDTH,
+            // bit_width: BIT_WIDTH,
             nodes: cache,
             root,
         })
@@ -435,22 +375,21 @@ where
         // warm up the cache and make sure it's available
         cache.get(&root).await?;
         Ok(Self {
-            hash_alg: HASH_ALG.to_string(),
+            // hash_alg: HASH_ALG.to_string(),
             bucket_size: 3,
-            bit_width: BIT_WIDTH,
+            // bit_width: BIT_WIDTH,
             nodes: cache,
             root,
         })
     }
 
-    pub async fn get(&mut self, key: &Vec<u8>) -> Result<Option<Data<T>>> {
+    pub async fn get(&mut self, key: &[u8]) -> Result<Option<T>> {
         // TODO calculate correct hash
-        let hash = multihash(&key);
-        let digest = hash.digest();
+        let hash = hash(&key);
 
         let mut current = self.nodes.get(&self.root).await?;
         validate_or_empty!(current);
-        for index in digest.iter() {
+        for index in hash.iter() {
             let bit = get_bit(&current.map, *index);
             if let Bit::Zero = bit {
                 return Ok(None);
@@ -461,7 +400,7 @@ where
                 Element::HashNode(cid) => self.nodes.get(&cid).await?,
                 Element::Bucket(bucket) => {
                     for elt in bucket {
-                        if elt.key == *key {
+                        if elt.key.as_slice() == key {
                             let Entry { value, .. } = elt;
                             return Ok(Some(value));
                         }
@@ -476,15 +415,15 @@ where
     pub fn root(&self) -> &Cid {
         &self.root
     }
-    pub async fn insert(&mut self, entry: Entry<T>) -> Result<()> {
-        use PathNode::{Block, Idx};
+    pub async fn insert(&mut self, key: Vec<u8>, value: T) -> Result<()> {
         let mut queue = Queue::new();
         let mut path = Path::new();
-        queue.add(entry);
+        queue.add(Entry::new(key, value));
         // start from root going down
         let mut current = self.nodes.get(&self.root).await?;
         validate_or_empty!(current);
         for lvl in 0..HASH_LEN {
+            use PathNode::{Block, Idx};
             match current.insert_all(lvl, &mut queue, self.bucket_size) {
                 Ok(_) => {
                     path.record(Block(current));
@@ -520,8 +459,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::executor::block_on;
+    use async_std::task;
     use libipld::mem::MemStore;
+    use libipld::multihash::Multihash;
     use proptest::prelude::*;
 
     #[test]
@@ -592,7 +532,7 @@ mod tests {
     }
 
     async fn dummy_hamt() -> Hamt<MemStore<DagCborCodec, Multihash>, u8> {
-        let store = MemStore::<DagCborCodec, Multihash>::new();
+        let store = MemStore::new();
         let config = CacheConfig::new(store, DagCborCodec);
         Hamt::new(config).await.unwrap()
     }
@@ -657,8 +597,13 @@ mod tests {
         let entries = vec![entry1, entry2, entry3, entry4];
         let copy = entries.clone();
         for entry in entries {
-            hamt.insert(entry).await.unwrap();
+            hamt.insert(entry.key, entry.value).await.unwrap();
         }
+        let mut node = hamt.nodes.get(&hamt.root).await.unwrap();
+        assert!(node
+            .insert(0, copy[0].clone().with_hash(), 3)
+            .unwrap_err()
+            .is_id());
         for entry in copy {
             assert_eq!(Some(entry.value), hamt.get(&entry.key).await.unwrap());
         }
@@ -666,8 +611,8 @@ mod tests {
     proptest! {
         #[test]
         fn test_hamt_set_and_get(batch in prop::collection::vec((prop::collection::vec(0..=255u8, 3), 0..1u8), 40)) {
-            let mut hamt = block_on(dummy_hamt());
-            let _ = block_on(test_batch_hamt_set_and_get(&mut hamt, batch)).unwrap();
+            let mut hamt = task::block_on(dummy_hamt());
+            let _ = task::block_on(test_batch_hamt_set_and_get(&mut hamt, batch)).unwrap();
         }
     }
 
@@ -681,14 +626,10 @@ mod tests {
     {
         for elt in batch.into_iter() {
             let key = elt.0;
-            let val = elt.1.clone();
-            hamt.insert(Entry {
-                key: key.clone(),
-                value: Data::Value(val),
-            })
-            .await?;
+            let val = elt.1;
+            hamt.insert(key.clone(), val).await?;
             let elt = hamt.get(&key).await?;
-            assert_eq!(elt, Some(Data::Value(val)));
+            assert_eq!(elt, Some(val));
         }
         Ok(())
     }
