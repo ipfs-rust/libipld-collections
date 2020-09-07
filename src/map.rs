@@ -173,16 +173,6 @@ pub struct Hamt<S, T: DagCbor> {
     root: Cid,
 }
 
-// impl<S: Clone, T: Clone + DagCbor> Hamt<S, T> {
-//     pub async fn clone(&self) -> Self {
-//         Self {
-//             bucket_size: self.bucket_size,
-//             nodes: self.nodes.clone().await,
-//             root: self.root.clone(),
-//         }
-//     }
-// }
-
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
 struct Node<T: DagCbor> {
     // map has 2.pow(bit_width) bits, here 256
@@ -442,6 +432,19 @@ where
         self.root = self.bubble_up(path).await?;
         Ok(())
     }
+    // traverse the hamt with the key, yielding the path up to the first bucket encountered
+    fn path_to_bucket(&mut self, key: Vec<u8>) -> Result<(u8, Path<T>), FindBucketError<T>> {
+        let mut path = Path::new();
+        let hash = hash(&key);
+        for lvl in 0..hash.len() {}
+        Ok((0, path))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FindBucketError<T: DagCbor> {
+    MaxDepth,
+    NoBucket(Path<T>),
 }
 
 #[cfg(test)]
