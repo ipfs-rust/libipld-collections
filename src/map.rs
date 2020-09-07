@@ -588,6 +588,13 @@ mod tests {
             hamt.insert(entry.key, entry.value).await.unwrap();
         }
         let mut node = hamt.nodes.get(&hamt.root).await.unwrap();
+        assert_eq!(
+            &hamt.root.hash().digest(),
+            &[
+                132, 126, 153, 26, 63, 11, 44, 118, 124, 73, 125, 82, 166, 48, 53, 80, 229, 195,
+                86, 35, 30, 230, 79, 12, 206, 112, 41, 193, 152, 161, 144, 236
+            ]
+        );
         assert!(node
             .insert(0, copy[0].clone().with_hash(), 3)
             .unwrap_err()
