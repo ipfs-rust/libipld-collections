@@ -1,5 +1,4 @@
 use Bit::{One, Zero};
-use InsertError::{Id, Overflow};
 
 use libipld::cache::{Cache, CacheConfig, IpldCache, ReadonlyCache};
 use libipld::cbor::DagCbor;
@@ -13,10 +12,8 @@ use std::cmp::PartialEq;
 use std::fmt::Debug;
 use std::iter::once;
 
-const BUCKET_SIZE: usize = 2;
+const BUCKET_SIZE: usize = 1;
 const MAP_LEN: usize = 32;
-// for debugging purposes
-const HASH_LEN: usize = 16;
 
 // For testing need a hash with easy collisions
 fn hash(bytes: &[u8]) -> Vec<u8> {
@@ -47,9 +44,15 @@ macro_rules! validate_or_empty {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum PathNode<T: DagCbor> {
-    Idx(usize),
-    Block(Node<T>),
+struct PathNode<T: DagCbor> {
+    idx: usize,
+    block: Node<T>,
+}
+
+impl<T: DagCbor> PathNode<T> {
+    fn new(block: Node<T>, idx: usize) -> Self {
+        Self { block, idx }
+    }
 }
 
 // all the information needed to retrace the path down the tree, to "bubble up" changes
@@ -69,8 +72,54 @@ impl<T: DagCbor> Path<T> {
     fn new() -> Self {
         Path(vec![])
     }
-    fn record(&mut self, path_node: PathNode<T>) {
-        self.0.push(path_node);
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn record(&mut self, block: Node<T>, idx: usize) {
+        self.0.push(PathNode::new(block, idx));
+    }
+    fn record_last(self, last: Node<T>) -> FullPath<T> {
+        FullPath::new(last, self)
+    }
+    fn pop(&mut self) -> Option<PathNode<T>> {
+        self.0.pop()
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FullPath<T: DagCbor> {
+    path: Path<T>,
+    last: Node<T>,
+}
+
+impl<T: DagCbor> FullPath<T> {
+    fn new(last: Node<T>, path: Path<T>) -> Self {
+        Self { last, path }
+    }
+    fn reduce(&mut self, bucket_size: usize) {
+        let last = &self.last;
+        if !last.has_children()
+            && !last.would_overflow_single_bucket(bucket_size)
+            && self.len() != 0
+        {
+            let next = self.path.pop().unwrap();
+            let PathNode { block, idx } = next;
+            let entries = self.last.extract();
+            let _ = std::mem::replace(&mut self.last, block);
+            self.last.data[idx] = Element::Bucket(entries);
+        }
+    }
+    fn len(&self) -> usize {
+        self.path.len()
+    }
+    fn full_reduce(&mut self, bucket_size: usize) {
+        let mut old = self.len();
+        let mut new = 0;
+        while old != new {
+            old = new;
+            self.reduce(bucket_size);
+            new = self.len();
+        }
+        self.last.flatten();
     }
 }
 
@@ -86,17 +135,22 @@ enum InsertError<T: DagCbor> {
     Overflow(Vec<Entry<T>>, usize),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DeleteError {
+    Id(Cid, usize),
+}
+
 #[cfg(test)]
 impl<T: DagCbor> InsertError<T> {
     fn is_id(&self) -> bool {
-        if let Id(_, _, _) = self {
+        if let InsertError::Id(_, _, _) = self {
             true
         } else {
             false
         }
     }
     fn is_overflow(&self) -> bool {
-        if let Overflow(_, _) = self {
+        if let InsertError::Overflow(_, _) = self {
             true
         } else {
             false
@@ -167,12 +221,6 @@ fn set_bit(map: &mut [u8], bit: u8, val: Bit) {
     }
 }
 
-pub struct Hamt<S, T: DagCbor> {
-    bucket_size: usize,
-    nodes: IpldCache<S, DagCborCodec, Node<T>>,
-    root: Cid,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
 struct Node<T: DagCbor> {
     // map has 2.pow(bit_width) bits, here 256
@@ -187,20 +235,77 @@ impl<T: DagCbor> Node<T> {
             data: vec![],
         }
     }
-    #[cfg(test)]
-    fn set(&mut self, mut index: u8, element: Element<T>) {
-        let idx = index as usize;
-        assert!(idx <= 255);
-        if idx >= self.map.len() {
-            index = self.map.len() as u8;
+    fn has_children(&self) -> bool {
+        for elt in self.data.iter() {
+            if elt.is_hash_node() {
+                return true;
+            }
         }
+        false
+    }
+    fn would_overflow_single_bucket(&self, bucket_size: usize) -> bool {
+        let mut acc = 0_usize;
+        for elt in self.data.iter() {
+            if let Element::Bucket(bucket) = elt {
+                acc += bucket.len();
+                if acc > bucket_size {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    fn extract(&mut self) -> Vec<Entry<T>> {
+        let mut entries = Vec::with_capacity(3);
+        for elt in self.data.iter_mut() {
+            match elt {
+                Element::Bucket(bucket) => {
+                    for elt in bucket.drain(0..) {
+                        entries.push(elt);
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        entries
+    }
+    fn get(&self, bit: u8) -> Option<&Element<T>> {
+        let idx = popcount(&self.map, bit);
+        match get_bit(&self.map, bit) {
+            Zero => None,
+            One => self.data.get(idx as usize),
+        }
+    }
+    fn flatten(&mut self) {
+        for bit in 0..=255 {
+            match self.get(bit) {
+                Some(Element::Bucket(bucket)) if bucket.is_empty() => {
+                    self.unset(bit);
+                }
+                _ => {}
+            }
+        }
+    }
+    #[cfg(test)]
+    fn set(&mut self, index: u8, element: Element<T>) {
+        let idx = popcount(&self.map, index);
         match get_bit(&self.map, index) {
             Zero => {
                 set_bit(&mut self.map, index, One);
-                self.data.insert(idx, element);
+                self.data.insert(idx as usize, element);
             }
             One => {
-                self.data[idx] = element;
+                self.data[idx as usize] = element;
+            }
+        }
+    }
+    fn unset(&mut self, index: u8) {
+        let idx = popcount(&self.map, index);
+        match get_bit(&self.map, index) {
+            Zero => {}
+            One => {
+                self.data.remove(idx as usize);
+                set_bit(&mut self.map, index, Zero);
             }
         }
     }
@@ -211,6 +316,7 @@ impl<T: DagCbor> Node<T> {
         entry_with_hash: EntryWithHash<T>,
         bucket_size: usize,
     ) -> Result<(), InsertError<T>> {
+        use InsertError::{Id, Overflow};
         let hash = entry_with_hash.hash;
         let map_index = hash[level];
         let bit = get_bit(&self.map, map_index);
@@ -223,11 +329,7 @@ impl<T: DagCbor> Node<T> {
                 Ok(())
             }
             One => {
-                let elt = self
-                    .data
-                    .get_mut(data_index)
-                    .expect("data_index points past the data array");
-                match elt {
+                match &mut self.data[data_index] {
                     Element::HashNode(cid) => Err(Id(entry, cid.clone(), data_index)),
                     Element::Bucket(ref mut bucket) => {
                         let found = bucket
@@ -263,12 +365,57 @@ impl<T: DagCbor> Node<T> {
         }
         Ok(())
     }
+    fn delete(&mut self, level: usize, key: &[u8], hash: &[u8]) -> Result<(), DeleteError> {
+        use DeleteError::Id;
+        let map_index = hash[level];
+        let bit = get_bit(&self.map, map_index);
+        let data_index = popcount(&self.map, map_index) as usize;
+        match bit {
+            Zero => Ok(()),
+            One => {
+                let elt = &mut self.data[data_index];
+                match elt {
+                    Element::HashNode(cid) => Err(Id(cid.clone(), data_index)),
+                    Element::Bucket(bucket) if bucket.len() != 1 => {
+                        for i in 0..bucket.len() {
+                            if bucket[i].key == key {
+                                bucket.remove(i);
+                                return Ok(());
+                            }
+                        }
+                        // todo!("Inserting place has to be sorted.");
+                        Ok(())
+                    }
+                    Element::Bucket(_) => {
+                        self.data.remove(data_index);
+                        set_bit(&mut self.map, map_index, Bit::Zero);
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
 enum Element<T: DagCbor> {
     HashNode(Cid),
     Bucket(Vec<Entry<T>>),
+}
+
+impl<T: DagCbor> Default for Element<T> {
+    fn default() -> Self {
+        Element::Bucket(vec![])
+    }
+}
+
+impl<T: DagCbor> Element<T> {
+    fn is_hash_node(&self) -> bool {
+        match self {
+            Element::HashNode(_) => true,
+            Element::Bucket(_) => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
@@ -310,33 +457,30 @@ struct EntryWithHash<T: DagCbor> {
     hash: Vec<u8>,
 }
 
+pub struct Hamt<S, T: DagCbor> {
+    bucket_size: usize,
+    nodes: IpldCache<S, DagCborCodec, Node<T>>,
+    root: Cid,
+}
+
 impl<S: Store, T: Clone + DagCbor + Send + Sync> Hamt<S, T>
 where
     S::Codec: Into<DagCborCodec>,
     <S as libipld::store::ReadonlyStore>::Codec: std::convert::From<DagCborCodec>,
 {
     // retrace the path traveled backwards, "bubbling up" the changes
-    async fn bubble_up(&mut self, path: Path<T>) -> Result<Cid> {
-        let mut path = path.into_iter().rev();
-        let mut block = if let Some(PathNode::Block(block)) = path.next() {
-            block
-        } else {
-            unreachable!()
-        };
-        // irrelevant, simply initialise
-        let mut index = 0;
+    async fn bubble_up(&mut self, full_path: FullPath<T>) -> Result<Cid> {
+        let FullPath {
+            last: mut block,
+            path,
+        } = full_path;
+        let path = path.into_iter().rev();
         let mut cid = self.nodes.insert(block).await?;
         for elt in path {
-            match elt {
-                PathNode::Idx(idx) => {
-                    index = idx;
-                }
-                PathNode::Block(node) => {
-                    block = node;
-                    block.data[index] = Element::HashNode(cid);
-                    cid = self.nodes.insert(block).await?;
-                }
-            }
+            let PathNode { idx, block: node } = elt;
+            block = node;
+            block.data[idx] = Element::HashNode(cid);
+            cid = self.nodes.insert(block).await?;
         }
         Ok(cid)
     }
@@ -395,21 +539,23 @@ where
     }
     pub async fn insert(&mut self, key: Vec<u8>, value: T) -> Result<()> {
         let mut queue = Queue::new();
-        let mut path = Path::new();
+        let hash_len = hash(&key).len();
         queue.add(Entry::new(key, value));
+        let mut path = Path::new();
         // start from root going down
         let mut current = self.nodes.get(&self.root).await?;
-        validate_or_empty!(current);
-        for lvl in 0..HASH_LEN {
-            use PathNode::{Block, Idx};
+        for lvl in 0..hash_len {
+            // validate_or_empty!(current);
+            use InsertError::{Id, Overflow};
             match current.insert_all(lvl, &mut queue, self.bucket_size) {
                 Ok(_) => {
-                    path.record(Block(current));
-                    break;
+                    let full_path = path.record_last(current);
+                    // recalculate cids recursively
+                    self.root = self.bubble_up(full_path).await?;
+                    return Ok(());
                 }
                 Err(Id(entry, cid, data_index)) => {
-                    path.record(Block(current));
-                    path.record(Idx(data_index));
+                    path.record(current, data_index);
                     queue.add(entry);
                     current = self.nodes.get(&cid).await?;
                     validate!(current);
@@ -418,33 +564,39 @@ where
                     for elt in overflow {
                         queue.add(elt);
                     }
-                    path.record(Block(current));
-                    path.record(Idx(data_index));
+                    path.record(current, data_index);
                     current = Node::new();
                 }
             }
-            if lvl == HASH_LEN - 1 {
-                // return Err(());
-                todo!("Output error due to maximum collision depth reached");
+        }
+        todo!("Output error due to maximum collision depth reached");
+    }
+    pub async fn delete(&mut self, key: &[u8]) -> Result<()> {
+        use DeleteError::Id;
+        let hash = hash(key);
+        let hash_len = hash.len();
+        let mut path = Path::new();
+        // start from root going down
+        let mut current = self.nodes.get(&self.root).await?;
+        // validate_or_empty!(current);
+        for lvl in 0..hash_len {
+            match current.delete(lvl, key, &hash) {
+                Ok(_) => {
+                    let mut full_path = path.record_last(current);
+                    full_path.full_reduce(self.bucket_size);
+                    // recalculate cids recursively
+                    self.root = self.bubble_up(full_path).await?;
+                    return Ok(());
+                }
+                Err(Id(cid, data_index)) => {
+                    path.record(current, data_index);
+                    current = self.nodes.get(&cid).await?;
+                    validate!(current);
+                }
             }
         }
-        // recalculate cids recursively
-        self.root = self.bubble_up(path).await?;
-        Ok(())
+        todo!("Output error due to maximum collision depth reached");
     }
-    // traverse the hamt with the key, yielding the path up to the first bucket encountered
-    fn path_to_bucket(&mut self, key: Vec<u8>) -> Result<(u8, Path<T>), FindBucketError<T>> {
-        let mut path = Path::new();
-        let hash = hash(&key);
-        for lvl in 0..hash.len() {}
-        Ok((0, path))
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum FindBucketError<T: DagCbor> {
-    MaxDepth,
-    NoBucket(Path<T>),
 }
 
 #[cfg(test)]
@@ -529,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_into_node() {
+    fn test_node_insert() {
         let mut node = dummy_node();
         assert_eq!(
             node.insert(0, Entry::new(vec![0, 0, 0], 0).with_hash(), 3),
@@ -547,6 +699,54 @@ mod tests {
             .insert(0, Entry::new(vec![0, 0, 3], 3).with_hash(), 3)
             .unwrap_err()
             .is_overflow());
+    }
+    #[test]
+    fn test_node_delete() {
+        let mut node = dummy_node();
+        assert_eq!(
+            node.insert(1, Entry::new(vec![0, 0], 0).with_hash(), 1),
+            Ok(())
+        );
+        assert_eq!(
+            node.insert(1, Entry::new(vec![0, 1], 0).with_hash(), 1),
+            Ok(())
+        );
+        assert_eq!(node.delete(1, &[0, 0], &[0, 0]), Ok(()));
+        assert_eq!(node.delete(1, &[0, 1], &[0, 1]), Ok(()));
+        assert_eq!(node, dummy_node());
+    }
+
+    #[test]
+    fn test_node_methods() {
+        let mut node = dummy_node();
+        let entries = vec![
+            Entry::new(vec![0, 0, 0], 0),
+            Entry::new(vec![0, 0, 1], 0),
+            Entry::new(vec![0, 0, 2], 0),
+            Entry::new(vec![1, 0, 2], 0),
+        ];
+        for elt in entries.iter().take(3) {
+            let _ = node.insert(0, elt.clone().with_hash(), 3);
+        }
+        assert!(!node.has_children());
+        assert!(!node.would_overflow_single_bucket(3));
+        let _ = node.insert(0, entries[3].clone().with_hash(), 3);
+        assert!(node.would_overflow_single_bucket(3));
+        assert_eq!(node.extract(), entries);
+
+        let mut node: Node<u8> = Node::new();
+        node.set(3, Element::default());
+        node.unset(3);
+        assert_eq!(node, Node::new());
+        for i in 0..=255 {
+            node.set(i, Element::default());
+            node.set(i, Element::default());
+        }
+        for i in 0..=255 {
+            node.unset(i);
+            node.unset(i);
+        }
+        assert_eq!(node, Node::new());
     }
 
     #[async_std::test]
@@ -566,10 +766,9 @@ mod tests {
         let mut node2_clone = dummy_node();
         let mut path = Path::new();
         node2_clone.set(0, Element::Bucket(vec![]));
-        path.record(PathNode::Block(node2_clone));
-        path.record(PathNode::Idx(0));
-        path.record(PathNode::Block(node1_clone));
-        let cid = hamt_clone.bubble_up(path).await.unwrap();
+        path.record(node2_clone, 0);
+        let full_path = path.record_last(node1_clone);
+        let cid = hamt_clone.bubble_up(full_path).await.unwrap();
         hamt_clone.root = cid;
 
         assert_eq!(hamt.root, hamt_clone.root);
@@ -579,7 +778,26 @@ mod tests {
     }
 
     #[async_std::test]
-    async fn test_insert_into_hamt() {
+    async fn test_reduce() {
+        let size = 2;
+        let entries = vec![Entry::new(vec![0, 0], 0), Entry::new(vec![0, 1], 0)];
+        let mut node = Node::new();
+        node.set(0, Element::HashNode(Cid::default()));
+        let mut path = Path::new();
+        path.record(node, 0);
+        let mut next = Node::new();
+        next.set(0, Element::Bucket(vec![entries[0].clone()]));
+        next.set(1, Element::Bucket(vec![entries[1].clone()]));
+        let mut full_path = path.record_last(next);
+        let pre_len = full_path.len();
+
+        full_path.reduce(size);
+        let post_len = full_path.len();
+        assert!(pre_len != post_len);
+    }
+
+    #[async_std::test]
+    async fn test_hamt_insert() {
         let mut hamt = dummy_hamt().await;
         let entry1 = Entry::new(vec![0, 0, 0], 0);
         let entry2 = Entry::new(vec![0, 0, 1], 0);
@@ -608,112 +826,117 @@ mod tests {
     }
     proptest! {
         #[test]
-        fn test_hamt_set_and_get(batch in prop::collection::vec((prop::collection::vec(0..=255u8, 3), 0..1u8), 40)) {
-            let mut hamt = task::block_on(dummy_hamt());
-            let _ = task::block_on(test_batch_hamt_set_and_get(&mut hamt, batch)).unwrap();
+        fn test_hamt_set_and_get(batch in prop::collection::vec((prop::collection::vec(0..=255u8, 6), 0..1u8), 20)) {
+            let _ = task::block_on(batch_set_and_get(batch)).unwrap();
+        }
+        #[test]
+        fn test_hamt_delete_and_get(batch in prop::collection::vec((prop::collection::vec(0..=255u8, 6), 0..1u8), 20)) {
+            let _ = task::block_on(batch_delete_and_get(batch)).unwrap();
         }
     }
 
-    async fn test_batch_hamt_set_and_get<S: Store>(
-        hamt: &mut Hamt<S, u8>,
-        batch: Vec<(Vec<u8>, u8)>,
-    ) -> Result<()>
-    where
-        S::Codec: Into<DagCborCodec>,
-        <S as libipld::store::ReadonlyStore>::Codec: std::convert::From<DagCborCodec>,
-    {
+    async fn batch_set_and_get(batch: Vec<(Vec<u8>, u8)>) -> Result<()> {
+        let mut hamt = dummy_hamt().await;
         for elt in batch.into_iter() {
-            let key = elt.0;
-            let val = elt.1;
+            let (key, val) = elt;
             hamt.insert(key.clone(), val).await?;
             let elt = hamt.get(&key).await?;
             assert_eq!(elt, Some(val));
         }
         Ok(())
     }
+    async fn batch_delete_and_get(mut batch: Vec<(Vec<u8>, u8)>) -> Result<()> {
+        let mut other = dummy_hamt().await;
+        let mut hamt = dummy_hamt().await;
+        let size = batch.len();
+
+        // make sure there are no repeated keys
+        batch.sort();
+        batch.dedup_by(|a, b| a.0 == b.0);
+
+        let insert_batch = batch.clone();
+        let mut delete_batch = vec![];
+        let mut get_batch = vec![];
+        for (counter, elt) in batch.into_iter().enumerate() {
+            if counter <= size / 2 {
+                get_batch.push(elt);
+            } else {
+                delete_batch.push(elt);
+            }
+        }
+        for elt in insert_batch.into_iter() {
+            let (key, val) = elt;
+            hamt.insert(key.clone(), val).await?;
+        }
+        for elt in delete_batch.into_iter() {
+            let (key, _) = elt;
+            hamt.delete(&key).await?;
+        }
+
+        // inserting n elements into a hamt other should give equal root cid as
+        // inserting additional n elements and deleting them
+        let insert_other_batch = get_batch.clone();
+        for elt in insert_other_batch.into_iter() {
+            let (key, val) = elt;
+            other.insert(key.clone(), val).await?;
+        }
+
+        // the non-deleted elements should be retrievable
+        for elt in get_batch.into_iter() {
+            let (key, _) = elt;
+            assert!(hamt.get(&key).await?.is_some());
+        }
+
+        assert_eq!(hamt.root, other.root);
+        Ok(())
+    }
+    #[async_std::test]
+    async fn test_delete() {
+        // first deletion test
+        let mut other = dummy_hamt().await;
+        let mut hamt = dummy_hamt().await;
+        let entries = vec![
+            Entry::new(vec![0, 0], 0),
+            Entry::new(vec![0, 1], 0),
+            // Entry::new(vec![0, 2], 0),
+            // Entry::new(vec![0, 3], 0),
+        ];
+        let mut entries_clone = entries.clone();
+        for entry in entries {
+            hamt.insert(entry.key, entry.value).await.unwrap();
+        }
+        let entry = entries_clone.pop().unwrap();
+        other
+            .insert(entry.clone().key, entry.clone().value)
+            .await
+            .unwrap();
+        for entry in entries_clone {
+            hamt.delete(&entry.key).await.unwrap();
+        }
+        assert_eq!(hamt.root, other.root);
+
+        // second delete test
+        // let empty = dummy_hamt().await;
+        // let mut hamt = dummy_hamt().await;
+        // let entries = vec![
+        //     Entry::new(vec![0, 0], 0),
+        //     Entry::new(vec![0, 1], 0),
+        //     // Entry::new(vec![0, 2], 0),
+        //     // Entry::new(vec![0, 3], 0),
+        // ];
+        // let entries_clone = entries.clone();
+        // for entry in entries {
+        //     hamt.insert(entry.key, entry.value).await.unwrap();
+        // }
+        // for entry in entries_clone {
+        //     hamt.delete(&entry.key).await.unwrap();
+        // }
+        // let node = hamt.nodes.get(&hamt.root).await.unwrap();
+        // let cid = first_cid(&node);
+        // let next = hamt.nodes.get(&cid).await.unwrap();
+
+        // dbg!(hamt.nodes.get(cid).await.unwrap());
+        // dbg!(hamt.nodes.get(&hamt.root).await.unwrap());
+        // assert_eq!(hamt.root, empty.root);
+    }
 }
-
-// pub async fn del(&mut self, key: Vec<u8>) -> Result<()> {
-//     let nodes = &mut self.nodes;
-//     // TODO calculate correct hash
-//     let mut hasher = Sha256::new();
-//     hasher.update(&key);
-//     let hash = hasher.finalize();
-
-//     // start from root going down
-//     // cid points to block
-//     let mut block = nodes.get(&self.root).await?;
-//     let mut cid_next = self.root.clone();
-//     let mut blks = vec![];
-
-//     for (count, &byte_index) in hash.iter().enumerate() {
-//         let data_index = popcount(&block.map, byte_index) as usize;
-//         let bit = get_bit(&block.map, byte_index);
-//         match bit {
-//             Bit::Zero => {
-//                 return Ok(());
-//             }
-//             Bit::One => {
-//                 if count == hash.len() {
-//                     // return Err(());
-//                     todo!("Output error due to maximum collision depth reached");
-//                 }
-//                 let elt = block
-//                     .data
-//                     .get_mut(data_index)
-//                     .expect("data_index points past the data array");
-//                 match elt {
-//                     Element::HashNode(cid) => {
-//                         cid_next = cid.clone();
-//                         blks.push((
-//                             data_index,
-//                             std::mem::replace(&mut block, nodes.get(&cid_next).await?),
-//                         ));
-//                         continue;
-//                     }
-//                     Element::Bucket(ref mut bucket) => {
-//                         if bucket.len() < self.bucket_size {
-//                             // todo!("Inserting place has to be sorted.");
-//                             println!("Insert not yet sorted.");
-//                             bucket.push(Entry { key, value });
-//                         } else {
-//                             // mutate entry to empty node
-//                             reinsert.append(bucket);
-//                         }
-//                     }
-//                 }
-//                 blks.push((data_index, block));
-//                 break;
-//             }
-//         }
-//     }
-// }
-
-// #[test]
-// fn popdbg() {
-//     let (mut vec, mut bit) = (vec![0, 0], 14);
-//     let mut set_one_zero = vec.clone();
-
-//     set_bit(&mut set_one_zero, bit, Bit::Zero);
-//     let left = popcount(&set_one_zero, bit);
-//     let right = popcount(&vec, bit - 1);
-//     let mut binary_left = set_one_zero[0] as u16;
-//     binary_left <<= 8;
-//     // println!("{:b}",binary_left);
-//     binary_left |= set_one_zero[1] as u16;
-//     // println!("{:b}",binary_left);
-//     let mut binary_right = vec[0] as u16;
-//     binary_right <<= 8;
-//     // println!("{:b}",binary_right);
-//     binary_right |= vec[1] as u16;
-//     // println!("{:b}",binary_right);
-//     println!(
-//         "left: ({0:016b},{1}), right: ({2:016b},{3})",
-//         binary_left,
-//         bit,
-//         binary_right,
-//         bit - 1
-//     );
-//     dbg!(left);
-//     dbg!(right);
-// }
