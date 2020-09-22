@@ -98,7 +98,7 @@ impl<T: DagCbor> FullPath<T> {
     fn reduce(&mut self, bucket_size: usize) {
         let last = &self.last;
         if !last.has_children()
-            && !last.would_overflow_single_bucket(bucket_size)
+            && !last.more_entries_than(bucket_size)
             && self.len() != 0
         {
             let next = self.path.pop().unwrap();
@@ -243,7 +243,7 @@ impl<T: DagCbor> Node<T> {
         }
         false
     }
-    fn would_overflow_single_bucket(&self, bucket_size: usize) -> bool {
+    fn more_entries_than(&self, bucket_size: usize) -> bool {
         let mut acc = 0_usize;
         for elt in self.data.iter() {
             if let Element::Bucket(bucket) = elt {
@@ -729,9 +729,9 @@ mod tests {
             let _ = node.insert(0, elt.clone().with_hash(), 3);
         }
         assert!(!node.has_children());
-        assert!(!node.would_overflow_single_bucket(3));
+        assert!(!node.more_entries_than(3));
         let _ = node.insert(0, entries[3].clone().with_hash(), 3);
-        assert!(node.would_overflow_single_bucket(3));
+        assert!(node.more_entries_than(3));
         assert_eq!(node.extract(), entries);
 
         let mut node: Node<u8> = Node::new();
