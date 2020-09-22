@@ -97,10 +97,7 @@ impl<T: DagCbor> FullPath<T> {
     }
     fn reduce(&mut self, bucket_size: usize) {
         let last = &self.last;
-        if !last.has_children()
-            && !last.more_entries_than(bucket_size)
-            && self.len() != 0
-        {
+        if !last.has_children() && !last.more_entries_than(bucket_size) && self.len() != 0 {
             let next = self.path.pop().unwrap();
             let PathNode { block, idx } = next;
             let entries = self.last.extract();
@@ -678,6 +675,18 @@ mod tests {
         let store = MemStore::new();
         let config = CacheConfig::new(store, DagCborCodec);
         Hamt::new(config).await.unwrap()
+    }
+
+    #[async_std::test]
+    async fn test_dummy_hamt() {
+        let hamt = dummy_hamt().await;
+        assert_eq!(
+            &[
+                17, 5, 205, 113, 186, 135, 108, 41, 45, 228, 103, 3, 117, 148, 111, 12, 194, 34,
+                144, 30, 201, 157, 222, 81, 41, 154, 114, 30, 207, 222, 150, 53
+            ],
+            hamt.root.hash().digest()
+        );
     }
 
     #[test]
