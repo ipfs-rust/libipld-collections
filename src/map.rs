@@ -422,9 +422,9 @@ struct Entry<T: DagCbor> {
 }
 
 impl<T: DagCbor> Entry<T> {
-    pub fn new(key: Vec<u8>, value: T) -> Self {
+    pub fn new<I: Into<Box<[u8]>>>(key: I, value: T) -> Self {
         Entry {
-            key: key.into_boxed_slice(),
+            key: key.into(),
             value,
         }
     }
@@ -537,7 +537,7 @@ where
     pub fn root(&self) -> &Cid {
         &self.root
     }
-    pub async fn insert(&mut self, key: Vec<u8>, value: T) -> Result<()> {
+    pub async fn insert(&mut self, key: Box<[u8]>, value: T) -> Result<()> {
         let mut queue = Queue::new();
         let hash_len = hash(&key).len();
         queue.add(Entry::new(key, value));
@@ -696,33 +696,27 @@ mod tests {
     fn test_node_insert() {
         let mut node = dummy_node();
         assert_eq!(
-            node.insert(0, Entry::new(vec![0, 0, 0], 0).with_hash(), 3),
+            node.insert(0, Entry::new([0, 0, 0], 0).with_hash(), 3),
             Ok(())
         );
         assert_eq!(
-            node.insert(0, Entry::new(vec![0, 0, 1], 0).with_hash(), 3),
+            node.insert(0, Entry::new([0, 0, 1], 0).with_hash(), 3),
             Ok(())
         );
         assert_eq!(
-            node.insert(0, Entry::new(vec![0, 0, 2], 1).with_hash(), 3),
+            node.insert(0, Entry::new([0, 0, 2], 1).with_hash(), 3),
             Ok(())
         );
         assert!(node
-            .insert(0, Entry::new(vec![0, 0, 3], 3).with_hash(), 3)
+            .insert(0, Entry::new([0, 0, 3], 3).with_hash(), 3)
             .unwrap_err()
             .is_overflow());
     }
     #[test]
     fn test_node_delete() {
         let mut node = dummy_node();
-        assert_eq!(
-            node.insert(1, Entry::new(vec![0, 0], 0).with_hash(), 1),
-            Ok(())
-        );
-        assert_eq!(
-            node.insert(1, Entry::new(vec![0, 1], 0).with_hash(), 1),
-            Ok(())
-        );
+        assert_eq!(node.insert(1, Entry::new([0, 0], 0).with_hash(), 1), Ok(()));
+        assert_eq!(node.insert(1, Entry::new([0, 1], 0).with_hash(), 1), Ok(()));
         assert_eq!(node.delete(1, &[0, 0], &[0, 0]), Ok(()));
         assert_eq!(node.delete(1, &[0, 1], &[0, 1]), Ok(()));
         assert_eq!(node, dummy_node());
@@ -732,10 +726,10 @@ mod tests {
     fn test_node_methods() {
         let mut node = dummy_node();
         let entries = vec![
-            Entry::new(vec![0, 0, 0], 0),
-            Entry::new(vec![0, 0, 1], 0),
-            Entry::new(vec![0, 0, 2], 0),
-            Entry::new(vec![1, 0, 2], 0),
+            Entry::new([0, 0, 0], 0),
+            Entry::new([0, 0, 1], 0),
+            Entry::new([0, 0, 2], 0),
+            Entry::new([1, 0, 2], 0),
         ];
         for elt in entries.iter().take(3) {
             let _ = node.insert(0, elt.clone().with_hash(), 3);
@@ -792,7 +786,7 @@ mod tests {
     #[async_std::test]
     async fn test_reduce() {
         let size = 2;
-        let entries = vec![Entry::new(vec![0, 0], 0), Entry::new(vec![0, 1], 0)];
+        let entries = vec![Entry::new([0, 0], 0), Entry::new([0, 1], 0)];
         let mut node = Node::new();
         node.set(0, Element::HashNode(Cid::default()));
         let mut path = Path::new();
@@ -812,28 +806,27 @@ mod tests {
     async fn test_hamt_insert() {
         // insert single element
         let mut hamt = dummy_hamt().await;
-        let entry = Entry::new(vec![0, 0, 0], 0);
-        hamt.insert(entry.key.to_vec(), entry.value).await.unwrap();
-        // println!("{:?}", hamt.nodes.get(&hamt.root).await.unwrap());
+        let entry = Entry::new([0, 0, 0], 0);
+        hamt.insert(entry.key, entry.value).await.unwrap();
         let mut node = Node::new();
-        let _ = node.insert(0, Entry::new(vec![0, 0, 0], 0).with_hash(), 3);
+        let _ = node.insert(0, Entry::new([0, 0, 0], 0).with_hash(), 3);
         assert_eq!(node, hamt.nodes.get(&hamt.root).await.unwrap());
         let mut hamt = dummy_hamt().await;
-        let entry1 = Entry::new(vec![0, 0, 0], 0);
-        let entry2 = Entry::new(vec![0, 0, 1], 0);
-        let entry3 = Entry::new(vec![0, 0, 2], 0);
-        let entry4 = Entry::new(vec![0, 0, 3], 0);
+        let entry1 = Entry::new([0, 0, 0], 0);
+        let entry2 = Entry::new([0, 0, 1], 0);
+        let entry3 = Entry::new([0, 0, 2], 0);
+        let entry4 = Entry::new([0, 0, 3], 0);
         let entries = vec![entry1, entry2, entry3, entry4];
         let copy = entries.clone();
         for entry in entries {
-            hamt.insert(entry.key.to_vec(), entry.value).await.unwrap();
+            hamt.insert(entry.key, entry.value).await.unwrap();
         }
         let mut node = hamt.nodes.get(&hamt.root).await.unwrap();
         assert_eq!(
             &hamt.root.hash().digest(),
             &[
-                132, 126, 153, 26, 63, 11, 44, 118, 124, 73, 125, 82, 166, 48, 53, 80, 229, 195,
-                86, 35, 30, 230, 79, 12, 206, 112, 41, 193, 152, 161, 144, 236
+                10, 133, 110, 7, 1, 116, 103, 149, 130, 193, 198, 132, 161, 142, 33, 76, 89, 142,
+                81, 181, 60, 135, 167, 116, 140, 112, 168, 13, 40, 172, 223, 90
             ]
         );
         assert!(node
@@ -859,7 +852,7 @@ mod tests {
         let mut hamt = dummy_hamt().await;
         for elt in batch.into_iter() {
             let (key, val) = elt;
-            hamt.insert(key.clone(), val).await?;
+            hamt.insert(key.clone().into(), val).await?;
             let elt = hamt.get(&key).await?;
             assert_eq!(elt, Some(val));
         }
@@ -886,7 +879,7 @@ mod tests {
         }
         for elt in insert_batch.into_iter() {
             let (key, val) = elt;
-            hamt.insert(key.clone(), val).await?;
+            hamt.insert(key.clone().into(), val).await?;
         }
         for elt in delete_batch.into_iter() {
             let (key, _) = elt;
@@ -898,7 +891,7 @@ mod tests {
         let insert_other_batch = get_batch.clone();
         for elt in insert_other_batch.into_iter() {
             let (key, val) = elt;
-            other.insert(key.clone(), val).await?;
+            other.insert(key.clone().into(), val).await?;
         }
 
         // the non-deleted elements should be retrievable
@@ -916,47 +909,20 @@ mod tests {
         let mut other = dummy_hamt().await;
         let mut hamt = dummy_hamt().await;
         let entries = vec![
-            Entry::new(vec![0, 0], 0),
-            Entry::new(vec![0, 1], 0),
+            Entry::new([0, 0], 0),
+            Entry::new([0, 1], 0),
             // Entry::new(vec![0, 2], 0),
             // Entry::new(vec![0, 3], 0),
         ];
         let mut entries_clone = entries.clone();
         for entry in entries {
-            hamt.insert(entry.key.to_vec(), entry.value).await.unwrap();
+            hamt.insert(entry.key, entry.value).await.unwrap();
         }
         let entry = entries_clone.pop().unwrap();
-        other
-            .insert(entry.clone().key.to_vec(), entry.clone().value)
-            .await
-            .unwrap();
+        other.insert(entry.key, entry.value).await.unwrap();
         for entry in entries_clone {
             hamt.delete(&entry.key).await.unwrap();
         }
         assert_eq!(hamt.root, other.root);
-
-        // second delete test
-        // let empty = dummy_hamt().await;
-        // let mut hamt = dummy_hamt().await;
-        // let entries = vec![
-        //     Entry::new(vec![0, 0], 0),
-        //     Entry::new(vec![0, 1], 0),
-        //     // Entry::new(vec![0, 2], 0),
-        //     // Entry::new(vec![0, 3], 0),
-        // ];
-        // let entries_clone = entries.clone();
-        // for entry in entries {
-        //     hamt.insert(entry.key, entry.value).await.unwrap();
-        // }
-        // for entry in entries_clone {
-        //     hamt.delete(&entry.key).await.unwrap();
-        // }
-        // let node = hamt.nodes.get(&hamt.root).await.unwrap();
-        // let cid = first_cid(&node);
-        // let next = hamt.nodes.get(&cid).await.unwrap();
-
-        // dbg!(hamt.nodes.get(cid).await.unwrap());
-        // dbg!(hamt.nodes.get(&hamt.root).await.unwrap());
-        // assert_eq!(hamt.root, empty.root);
     }
 }
