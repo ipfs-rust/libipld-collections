@@ -116,7 +116,7 @@ impl<T: DagCbor> FullPath<T> {
             self.reduce(bucket_size);
             new = self.len();
         }
-        self.last.flatten();
+        self.last.unset_empty();
     }
 }
 
@@ -273,7 +273,7 @@ impl<T: DagCbor> Node<T> {
             One => self.data.get(idx as usize),
         }
     }
-    fn flatten(&mut self) {
+    fn unset_empty(&mut self) {
         for bit in 0..=255 {
             match self.get(bit) {
                 Some(Element::Bucket(bucket)) if bucket.is_empty() => {
