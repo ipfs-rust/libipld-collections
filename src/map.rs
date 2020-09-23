@@ -375,7 +375,7 @@ impl<T: DagCbor> Node<T> {
                     Element::HashNode(cid) => Err(Id(cid.clone(), data_index)),
                     Element::Bucket(bucket) if bucket.len() != 1 => {
                         for i in 0..bucket.len() {
-                            if bucket[i].key == key {
+                            if &*bucket[i].key == key {
                                 bucket.remove(i);
                                 return Ok(());
                             }
@@ -417,13 +417,16 @@ impl<T: DagCbor> Element<T> {
 
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
 struct Entry<T: DagCbor> {
-    key: Vec<u8>,
+    key: Box<[u8]>,
     value: T,
 }
 
 impl<T: DagCbor> Entry<T> {
     pub fn new(key: Vec<u8>, value: T) -> Self {
-        Entry { key, value }
+        Entry {
+            key: key.into_boxed_slice(),
+            value,
+        }
     }
     fn with_hash(self) -> EntryWithHash<T> {
         let hash = hash(&self.key);
@@ -519,7 +522,7 @@ where
                 Element::HashNode(cid) => self.nodes.get(&cid).await?,
                 Element::Bucket(bucket) => {
                     for elt in bucket {
-                        if elt.key.as_slice() == key {
+                        if &*elt.key == key {
                             let Entry { value, .. } = elt;
                             return Ok(Some(value));
                         }
@@ -810,7 +813,7 @@ mod tests {
         // insert single element
         let mut hamt = dummy_hamt().await;
         let entry = Entry::new(vec![0, 0, 0], 0);
-        hamt.insert(entry.key, entry.value).await.unwrap();
+        hamt.insert(entry.key.to_vec(), entry.value).await.unwrap();
         // println!("{:?}", hamt.nodes.get(&hamt.root).await.unwrap());
         let mut node = Node::new();
         let _ = node.insert(0, Entry::new(vec![0, 0, 0], 0).with_hash(), 3);
@@ -823,7 +826,7 @@ mod tests {
         let entries = vec![entry1, entry2, entry3, entry4];
         let copy = entries.clone();
         for entry in entries {
-            hamt.insert(entry.key, entry.value).await.unwrap();
+            hamt.insert(entry.key.to_vec(), entry.value).await.unwrap();
         }
         let mut node = hamt.nodes.get(&hamt.root).await.unwrap();
         assert_eq!(
@@ -920,11 +923,11 @@ mod tests {
         ];
         let mut entries_clone = entries.clone();
         for entry in entries {
-            hamt.insert(entry.key, entry.value).await.unwrap();
+            hamt.insert(entry.key.to_vec(), entry.value).await.unwrap();
         }
         let entry = entries_clone.pop().unwrap();
         other
-            .insert(entry.clone().key, entry.clone().value)
+            .insert(entry.clone().key.to_vec(), entry.clone().value)
             .await
             .unwrap();
         for entry in entries_clone {
