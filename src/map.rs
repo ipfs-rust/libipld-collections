@@ -807,6 +807,14 @@ mod tests {
 
     #[async_std::test]
     async fn test_hamt_insert() {
+        // insert single element
+        let mut hamt = dummy_hamt().await;
+        let entry = Entry::new(vec![0, 0, 0], 0);
+        hamt.insert(entry.key, entry.value).await.unwrap();
+        // println!("{:?}", hamt.nodes.get(&hamt.root).await.unwrap());
+        let mut node = Node::new();
+        let _ = node.insert(0, Entry::new(vec![0, 0, 0], 0).with_hash(), 3);
+        assert_eq!(node, hamt.nodes.get(&hamt.root).await.unwrap());
         let mut hamt = dummy_hamt().await;
         let entry1 = Entry::new(vec![0, 0, 0], 0);
         let entry2 = Entry::new(vec![0, 0, 1], 0);
