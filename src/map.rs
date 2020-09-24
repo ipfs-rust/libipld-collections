@@ -95,6 +95,7 @@ impl<T: DagCbor> FullPath<T> {
     fn new(last: Node<T>, path: Path<T>) -> Self {
         Self { last, path }
     }
+    // collapses last node in the path into the previous one if possible
     fn reduce(&mut self, bucket_size: usize) {
         let last = &self.last;
         if !last.has_children() && !last.more_entries_than(bucket_size) && self.len() != 0 {
@@ -108,6 +109,7 @@ impl<T: DagCbor> FullPath<T> {
     fn len(&self) -> usize {
         self.path.len()
     }
+    // collapses all nodes that are possible into previous ones
     fn full_reduce(&mut self, bucket_size: usize) {
         let mut old = self.len();
         let mut new = 0;
@@ -233,12 +235,7 @@ impl<T: DagCbor> Node<T> {
         }
     }
     fn has_children(&self) -> bool {
-        for elt in self.data.iter() {
-            if elt.is_hash_node() {
-                return true;
-            }
-        }
-        false
+        self.data.iter().any(|elt| elt.is_hash_node())
     }
     fn more_entries_than(&self, bucket_size: usize) -> bool {
         let mut acc = 0_usize;
