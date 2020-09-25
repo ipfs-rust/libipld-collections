@@ -11,6 +11,7 @@ use libipld::DagCbor;
 use std::cmp::PartialEq;
 use std::fmt::Debug;
 use std::iter::once;
+use std::collections::BTreeMap;
 
 const BUCKET_SIZE: usize = 1;
 const MAP_LEN: usize = 32;
@@ -465,6 +466,14 @@ where
     S::Codec: Into<DagCborCodec>,
     <S as libipld::store::ReadonlyStore>::Codec: std::convert::From<DagCborCodec>,
 {
+    pub async fn from<I: Into<Box<[u8]>>>(store: S, btree: BTreeMap<I, T>) -> Result<Self> {
+        let config = CacheConfig::new(store, DagCborCodec);
+        let mut hamt = Hamt::new(config).await?;
+        for (key, value) in btree {
+            hamt.insert(key.into(), value).await?;
+        }
+        Ok(hamt)
+    }
     // retrace the path traveled backwards, "bubbling up" the changes
     async fn bubble_up(&mut self, full_path: FullPath<T>) -> Result<Cid> {
         let FullPath {
