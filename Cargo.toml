@@ -8,7 +8,8 @@ description = "multiblock ipld collections"
 repository = "https://github.com/ipfs-rust/rust-ipld-collections"
 
 [dependencies]
-libipld = { version = "0.4.0", default-features = false, features = ["dag-cbor", "derive"] }
+# libipld = { version = "0.4.0", default-features = false, features = ["dag-cbor", "derive"] }
+libipld = { path = "../libipld", default-features = false, features = ["dag-cbor", "derive"] }
 
 [dev-dependencies]
 async-std = { version = "1.6.3", features = ["attributes"] }

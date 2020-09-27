@@ -1,26 +1,30 @@
 use Bit::{One, Zero};
 
-use libipld::cache::{Cache, CacheConfig, IpldCache, ReadonlyCache};
+use libipld::cache::{Cache, IpldCache};
 use libipld::cbor::DagCbor;
 use libipld::cbor::DagCborCodec;
 use libipld::cid::Cid;
 use libipld::error::Result;
+use libipld::ipld::Ipld;
 use libipld::multihash::Hasher;
+use libipld::multihash::BLAKE2B_256;
+use libipld::prelude::{Decode, Encode};
 use libipld::store::Store;
+use libipld::store::StoreParams;
 use libipld::DagCbor;
 use std::cmp::PartialEq;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::iter::once;
-use std::collections::BTreeMap;
 
 const BUCKET_SIZE: usize = 1;
 const MAP_LEN: usize = 32;
 
 // For testing need a hash with easy collisions
 fn hash(bytes: &[u8]) -> Vec<u8> {
-    use libipld::multihash::{Identity, Sha2_256};
+    use libipld::multihash::{Identity256, Sha2_256};
     if cfg!(test) {
-        Identity::digest(bytes).as_ref().to_vec()
+        Identity256::digest(bytes).as_ref().to_vec()
     } else {
         Sha2_256::digest(bytes).as_ref().to_vec()
     }
@@ -463,12 +467,18 @@ pub struct Hamt<S, T: DagCbor> {
 
 impl<S: Store, T: Clone + DagCbor + Send + Sync> Hamt<S, T>
 where
-    S::Codec: Into<DagCborCodec>,
-    <S as libipld::store::ReadonlyStore>::Codec: std::convert::From<DagCborCodec>,
+    S: Store,
+    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
+    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
+    T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
+    Ipld: Decode<<S::Params as StoreParams>::Codecs>,
 {
-    pub async fn from<I: Into<Box<[u8]>>>(store: S, btree: BTreeMap<I, T>) -> Result<Self> {
-        let config = CacheConfig::new(store, DagCborCodec);
-        let mut hamt = Hamt::new(config).await?;
+    pub async fn from<I: Into<Box<[u8]>>>(
+        store: S,
+        cache_size: usize,
+        btree: BTreeMap<I, T>,
+    ) -> Result<Self> {
+        let mut hamt = Hamt::new(store, cache_size).await?;
         for (key, value) in btree {
             hamt.insert(key.into(), value).await?;
         }
@@ -490,8 +500,8 @@ where
         }
         Ok(cid)
     }
-    pub async fn new(config: CacheConfig<S, DagCborCodec>) -> Result<Self> {
-        let cache = IpldCache::new(config);
+    pub async fn new(store: S, cache_size: usize) -> Result<Self> {
+        let cache = IpldCache::new(store, DagCborCodec, BLAKE2B_256, cache_size);
         let root = cache.insert(Node::new()).await?;
         Ok(Self {
             bucket_size: BUCKET_SIZE,
@@ -500,8 +510,8 @@ where
         })
     }
 
-    pub async fn open(config: CacheConfig<S, DagCborCodec>, root: Cid) -> Result<Self> {
-        let cache = IpldCache::new(config);
+    pub async fn open(store: S, cache_size: usize, root: Cid) -> Result<Self> {
+        let cache = IpldCache::new(store, DagCborCodec, BLAKE2B_256, cache_size);
         // warm up the cache and make sure it's available
         cache.get(&root).await?;
         Ok(Self {
@@ -610,7 +620,7 @@ mod tests {
     use super::*;
     use async_std::task;
     use libipld::mem::MemStore;
-    use libipld::multihash::Multihash;
+    use libipld::store::DefaultParams;
     use proptest::prelude::*;
 
     #[test]
@@ -680,10 +690,9 @@ mod tests {
         }
     }
 
-    async fn dummy_hamt() -> Hamt<MemStore<DagCborCodec, Multihash>, u8> {
-        let store = MemStore::new();
-        let config = CacheConfig::new(store, DagCborCodec);
-        Hamt::new(config).await.unwrap()
+    async fn dummy_hamt() -> Hamt<MemStore<DefaultParams>, u8> {
+        let store = MemStore::default();
+        Hamt::new(store, 12).await.unwrap()
     }
 
     #[async_std::test]
