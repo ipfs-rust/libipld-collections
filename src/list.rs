@@ -105,24 +105,25 @@ where
         items: impl Iterator<Item = T>,
     ) -> Result<Self> {
         let cache = IpldCache::new(store, DagCborCodec, BLAKE2B_256, cache_size);
-        // TODO create_batch_with_capacity
-        let mut batch = cache.create_batch();
 
         let mut items: Vec<Data<T>> = items.map(Data::Value).collect();
-        let width = width as usize;
         let mut height = 0;
+        let mut cid = cache.insert(Node::new(width, height, vec![])).await?;
+        let width = width as usize;
 
         loop {
             let n_items = items.len() / width + 1;
             let mut items_next = Vec::with_capacity(n_items);
             for chunk in items.chunks(width) {
                 let node = Node::new(width as u32, height, chunk.to_vec());
-                let cid = batch.insert(node)?;
+                cid = cache.insert(node).await?;
                 items_next.push(Data::Link(cid.clone()));
             }
             if items_next.len() == 1 {
-                let root = cache.insert_batch(batch).await?;
-                return Ok(Self { nodes: cache, root });
+                return Ok(Self {
+                    nodes: cache,
+                    root: cid,
+                });
             }
             items = items_next;
             height += 1;
@@ -155,24 +156,29 @@ where
             chain
         };
 
-        let mut batch = self.nodes.create_batch_with_capacity(chain.capacity());
-
         let mut mutated = false;
+        let cache = &self.nodes;
+        let mut last = cache
+            .insert(Node::new(width as u32, height, vec![]))
+            .await?;
         for mut node in chain.into_iter().rev() {
             if mutated {
                 let data = node.data_mut();
                 data.pop();
                 data.push(value);
-                value = Data::Link(batch.insert(node)?.clone());
+                last = cache.insert(node).await?;
+                value = Data::Link(last.clone());
             } else {
                 let data = node.data_mut();
                 if data.len() < width {
                     data.push(value);
-                    value = Data::Link(batch.insert(node)?.clone());
+                    last = cache.insert(node).await?;
+                    value = Data::Link(last.clone());
                     mutated = true;
                 } else {
                     let node = Node::new(width as u32, node.height(), vec![value]);
-                    value = Data::Link(batch.insert(node)?.clone());
+                    last = cache.insert(node).await?;
+                    value = Data::Link(last.clone());
                     mutated = false;
                 }
             }
@@ -181,10 +187,10 @@ where
         if !mutated {
             let children = vec![Data::Link(self.root().clone()), value];
             let node = Node::new(width as u32, height + 1, children);
-            batch.insert(node)?;
+            last = cache.insert(node).await?;
         }
 
-        self.root = self.nodes.insert_batch(batch).await?;
+        self.root = last;
 
         Ok(())
     }
@@ -314,7 +320,7 @@ mod tests {
     async fn test_list_from() -> Result<()> {
         let store = MemStore::<DefaultParams>::default();
         let data: Vec<_> = (0..13).map(|i| i as i64).collect();
-        let mut list = List::from(store, 12,3, data.clone().into_iter()).await?;
+        let mut list = List::from(store, 12, 3, data.clone().into_iter()).await?;
         let mut data2 = vec![];
         let mut iter = list.iter();
         while let Some(elem) = iter.next().await? {
