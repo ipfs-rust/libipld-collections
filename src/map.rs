@@ -140,7 +140,7 @@ enum InsertError<T: DagCbor> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum DeleteError {
+enum RemoveError {
     Id(Cid, usize),
 }
 
@@ -364,8 +364,8 @@ impl<T: DagCbor> Node<T> {
         }
         Ok(())
     }
-    fn delete(&mut self, level: usize, key: &[u8], hash: &[u8]) -> Result<(), DeleteError> {
-        use DeleteError::Id;
+    fn remove(&mut self, level: usize, key: &[u8], hash: &[u8]) -> Result<(), RemoveError> {
+        use RemoveError::Id;
         let map_index = hash[level];
         let bit = get_bit(&self.map, map_index);
         let data_index = popcount(&self.map, map_index) as usize;
@@ -429,7 +429,6 @@ impl<T: DagCbor> Entry<T> {
             key: key.into(),
             value,
         }
-        Ok(())
     }
     fn with_hash(self) -> EntryWithHash<T> {
         let hash = hash(&self.key);
@@ -588,8 +587,8 @@ where
         }
         todo!("Output error due to maximum collision depth reached");
     }
-    pub async fn delete(&mut self, key: &[u8]) -> Result<()> {
-        use DeleteError::Id;
+    pub async fn remove(&mut self, key: &[u8]) -> Result<()> {
+        use RemoveError::Id;
         let hash = hash(key);
         let hash_len = hash.len();
         let mut path = Path::new();
@@ -597,7 +596,7 @@ where
         let mut current = self.nodes.get(&self.root).await?;
         // validate_or_empty!(current);
         for lvl in 0..hash_len {
-            match current.delete(lvl, key, &hash) {
+            match current.remove(lvl, key, &hash) {
                 Ok(_) => {
                     let mut full_path = path.record_last(current);
                     full_path.full_reduce(self.bucket_size);
@@ -729,12 +728,12 @@ mod tests {
             .is_overflow());
     }
     #[test]
-    fn test_node_delete() {
+    fn test_node_remove() {
         let mut node = dummy_node();
         assert_eq!(node.insert(1, Entry::new([0, 0], 0).with_hash(), 1), Ok(()));
         assert_eq!(node.insert(1, Entry::new([0, 1], 0).with_hash(), 1), Ok(()));
-        assert_eq!(node.delete(1, &[0, 0], &[0, 0]), Ok(()));
-        assert_eq!(node.delete(1, &[0, 1], &[0, 1]), Ok(()));
+        assert_eq!(node.remove(1, &[0, 0], &[0, 0]), Ok(()));
+        assert_eq!(node.remove(1, &[0, 1], &[0, 1]), Ok(()));
         assert_eq!(node, dummy_node());
     }
 
@@ -859,8 +858,8 @@ mod tests {
             let _ = task::block_on(batch_set_and_get(batch)).unwrap();
         }
         #[test]
-        fn test_hamt_delete_and_get(batch in prop::collection::vec((prop::collection::vec(0..=255u8, 6), 0..1u8), 20)) {
-            let _ = task::block_on(batch_delete_and_get(batch)).unwrap();
+        fn test_hamt_remove_and_get(batch in prop::collection::vec((prop::collection::vec(0..=255u8, 6), 0..1u8), 20)) {
+            let _ = task::block_on(batch_remove_and_get(batch)).unwrap();
         }
     }
 
@@ -874,7 +873,7 @@ mod tests {
         }
         Ok(())
     }
-    async fn batch_delete_and_get(mut batch: Vec<(Vec<u8>, u8)>) -> Result<()> {
+    async fn batch_remove_and_get(mut batch: Vec<(Vec<u8>, u8)>) -> Result<()> {
         let mut other = dummy_hamt().await;
         let mut hamt = dummy_hamt().await;
         let size = batch.len();
@@ -884,22 +883,22 @@ mod tests {
         batch.dedup_by(|a, b| a.0 == b.0);
 
         let insert_batch = batch.clone();
-        let mut delete_batch = vec![];
+        let mut remove_batch = vec![];
         let mut get_batch = vec![];
         for (counter, elt) in batch.into_iter().enumerate() {
             if counter <= size / 2 {
                 get_batch.push(elt);
             } else {
-                delete_batch.push(elt);
+                remove_batch.push(elt);
             }
         }
         for elt in insert_batch.into_iter() {
             let (key, val) = elt;
             hamt.insert(key.clone().into(), val).await?;
         }
-        for elt in delete_batch.into_iter() {
+        for elt in remove_batch.into_iter() {
             let (key, _) = elt;
-            hamt.delete(&key).await?;
+            hamt.remove(&key).await?;
         }
 
         // inserting n elements into a hamt other should give equal root cid as
@@ -910,7 +909,7 @@ mod tests {
             other.insert(key.clone().into(), val).await?;
         }
 
-        // the non-deleted elements should be retrievable
+        // the non-removed elements should be retrievable
         for elt in get_batch.into_iter() {
             let (key, _) = elt;
             assert!(hamt.get(&key).await?.is_some());
@@ -920,7 +919,7 @@ mod tests {
         Ok(())
     }
     #[async_std::test]
-    async fn test_delete() {
+    async fn test_remove() {
         // first deletion test
         let mut other = dummy_hamt().await;
         let mut hamt = dummy_hamt().await;
@@ -937,7 +936,7 @@ mod tests {
         let entry = entries_clone.pop().unwrap();
         other.insert(entry.key, entry.value).await.unwrap();
         for entry in entries_clone {
-            hamt.delete(&entry.key).await.unwrap();
+            hamt.remove(&entry.key).await.unwrap();
         }
         assert_eq!(hamt.root, other.root);
     }
