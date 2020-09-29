@@ -429,6 +429,7 @@ impl<T: DagCbor> Entry<T> {
             key: key.into(),
             value,
         }
+        Ok(())
     }
     fn with_hash(self) -> EntryWithHash<T> {
         let hash = hash(&self.key);
