@@ -117,7 +117,7 @@ where
             for chunk in items.chunks(width) {
                 let node = Node::new(width as u32, height, chunk.to_vec());
                 cid = cache.insert(node).await?;
-                items_next.push(Data::Link(cid.clone()));
+                items_next.push(Data::Link(cid));
             }
             if items_next.len() == 1 {
                 return Ok(Self {
@@ -167,25 +167,25 @@ where
                 data.pop();
                 data.push(value);
                 last = cache.insert(node).await?;
-                value = Data::Link(last.clone());
+                value = Data::Link(last);
             } else {
                 let data = node.data_mut();
                 if data.len() < width {
                     data.push(value);
                     last = cache.insert(node).await?;
-                    value = Data::Link(last.clone());
+                    value = Data::Link(last);
                     mutated = true;
                 } else {
                     let node = Node::new(width as u32, node.height(), vec![value]);
                     last = cache.insert(node).await?;
-                    value = Data::Link(last.clone());
+                    value = Data::Link(last);
                     mutated = false;
                 }
             }
         }
 
         if !mutated {
-            let children = vec![Data::Link(self.root().clone()), value];
+            let children = vec![Data::Link(*self.root()), value];
             let node = Node::new(width as u32, height + 1, children);
             last = cache.insert(node).await?;
         }

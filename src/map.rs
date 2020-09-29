@@ -329,7 +329,7 @@ impl<T: DagCbor> Node<T> {
             }
             One => {
                 match &mut self.data[data_index] {
-                    Element::HashNode(cid) => Err(Id(entry, cid.clone(), data_index)),
+                    Element::HashNode(cid) => Err(Id(entry, *cid, data_index)),
                     Element::Bucket(ref mut bucket) => {
                         let found = bucket
                             .iter_mut()
@@ -374,7 +374,7 @@ impl<T: DagCbor> Node<T> {
             One => {
                 let elt = &mut self.data[data_index];
                 match elt {
-                    Element::HashNode(cid) => Err(Id(cid.clone(), data_index)),
+                    Element::HashNode(cid) => Err(Id(*cid, data_index)),
                     Element::Bucket(bucket) if bucket.len() != 1 => {
                         for i in 0..bucket.len() {
                             if &*bucket[i].key == key {
