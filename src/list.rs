@@ -1,11 +1,14 @@
 use libipld::cache::Cache;
-use libipld::cache::ReadonlyCache;
-use libipld::cache::{CacheConfig, IpldCache};
+use libipld::cache::IpldCache;
 use libipld::cbor::DagCbor;
 use libipld::cbor::DagCborCodec;
 use libipld::cid::Cid;
 use libipld::error::Result;
+use libipld::ipld::Ipld;
+use libipld::multihash::Code;
+use libipld::prelude::{Decode, Encode};
 use libipld::store::Store;
+use libipld::store::StoreParams;
 use libipld::DagCbor;
 
 #[derive(Clone, Debug, DagCbor)]
@@ -65,24 +68,28 @@ impl<T: DagCbor> Node<T> {
     }
 }
 
-pub struct List<S, T: DagCbor> {
+pub struct List<S: Store, T: DagCbor> {
     nodes: IpldCache<S, DagCborCodec, Node<T>>,
     root: Cid,
 }
 
 impl<S: Store, T: Clone + DagCbor + Send + Sync> List<S, T>
 where
-    S::Codec: Into<DagCborCodec>,
-    <S as libipld::store::ReadonlyStore>::Codec: std::convert::From<DagCborCodec>,
+    S: Store,
+    S::Params: StoreParams<Hashes = Code>,
+    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
+    T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
+    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
+    Ipld: Decode<<S::Params as StoreParams>::Codecs>,
 {
-    pub async fn new(config: CacheConfig<S, DagCborCodec>, width: u32) -> Result<Self> {
-        let cache = IpldCache::new(config);
+    pub async fn new(store: S, cache_size: usize, width: u32) -> Result<Self> {
+        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
         let root = cache.insert(Node::new(width, 0, vec![])).await?;
         Ok(Self { nodes: cache, root })
     }
 
-    pub async fn open(config: CacheConfig<S, DagCborCodec>, root: Cid) -> Result<Self> {
-        let cache = IpldCache::new(config);
+    pub async fn open(store: S, cache_size: usize, root: Cid) -> Result<Self> {
+        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
         // warm up the cache and make sure it's available
         cache.get(&root).await?;
         Ok(Self { nodes: cache, root })
@@ -93,29 +100,31 @@ where
     }
 
     pub async fn from(
-        config: CacheConfig<S, DagCborCodec>,
+        store: S,
         width: u32,
+        cache_size: usize,
         items: impl Iterator<Item = T>,
     ) -> Result<Self> {
-        let cache = IpldCache::new(config);
-        // TODO create_batch_with_capacity
-        let mut batch = cache.create_batch();
+        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
 
         let mut items: Vec<Data<T>> = items.map(Data::Value).collect();
-        let width = width as usize;
         let mut height = 0;
+        let mut cid = cache.insert(Node::new(width, height, vec![])).await?;
+        let width = width as usize;
 
         loop {
             let n_items = items.len() / width + 1;
             let mut items_next = Vec::with_capacity(n_items);
             for chunk in items.chunks(width) {
                 let node = Node::new(width as u32, height, chunk.to_vec());
-                let cid = batch.insert(node)?;
-                items_next.push(Data::Link(cid.clone()));
+                cid = cache.insert(node).await?;
+                items_next.push(Data::Link(cid));
             }
             if items_next.len() == 1 {
-                let root = cache.insert_batch(batch).await?;
-                return Ok(Self { nodes: cache, root });
+                return Ok(Self {
+                    nodes: cache,
+                    root: cid,
+                });
             }
             items = items_next;
             height += 1;
@@ -148,36 +157,41 @@ where
             chain
         };
 
-        let mut batch = self.nodes.create_batch_with_capacity(chain.capacity());
-
         let mut mutated = false;
+        let cache = &self.nodes;
+        let mut last = cache
+            .insert(Node::new(width as u32, height, vec![]))
+            .await?;
         for mut node in chain.into_iter().rev() {
             if mutated {
                 let data = node.data_mut();
                 data.pop();
                 data.push(value);
-                value = Data::Link(batch.insert(node)?.clone());
+                last = cache.insert(node).await?;
+                value = Data::Link(last);
             } else {
                 let data = node.data_mut();
                 if data.len() < width {
                     data.push(value);
-                    value = Data::Link(batch.insert(node)?.clone());
+                    last = cache.insert(node).await?;
+                    value = Data::Link(last);
                     mutated = true;
                 } else {
                     let node = Node::new(width as u32, node.height(), vec![value]);
-                    value = Data::Link(batch.insert(node)?.clone());
+                    last = cache.insert(node).await?;
+                    value = Data::Link(last);
                     mutated = false;
                 }
             }
         }
 
         if !mutated {
-            let children = vec![Data::Link(self.root().clone()), value];
+            let children = vec![Data::Link(*self.root()), value];
             let node = Node::new(width as u32, height + 1, children);
-            batch.insert(node)?;
+            last = cache.insert(node).await?;
         }
 
-        self.root = self.nodes.insert_batch(batch).await?;
+        self.root = last;
 
         Ok(())
     }
@@ -251,15 +265,19 @@ where
     }
 }
 
-pub struct Iter<'a, S, T: DagCbor> {
+pub struct Iter<'a, S: Store, T: DagCbor> {
     list: &'a mut List<S, T>,
     index: usize,
 }
 
-impl<'a, S: Store, T: Clone + DagCbor + Send + Sync> Iter<'a, S, T>
+impl<'a, S, T: DagCbor> Iter<'a, S, T>
 where
-    S::Codec: Into<DagCborCodec>,
-    <S as libipld::store::ReadonlyStore>::Codec: std::convert::From<DagCborCodec>,
+    S: Store,
+    S::Params: StoreParams<Hashes = Code>,
+    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
+    T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
+    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
+    Ipld: Decode<<S::Params as StoreParams>::Codecs>,
 {
     #[allow(clippy::should_implement_trait)]
     pub async fn next(&mut self) -> Result<Option<T>> {
@@ -274,15 +292,13 @@ mod tests {
     use super::*;
     use async_std::task;
     use libipld::mem::MemStore;
-    use libipld::multihash::Multihash;
+    use libipld::store::DefaultParams;
     use model::*;
 
     #[async_std::test]
     async fn test_list() -> Result<()> {
-        let store = MemStore::<DagCborCodec, Multihash>::new();
-        let mut config = CacheConfig::new(store, DagCborCodec);
-        config.size = 12;
-        let mut list = List::new(config, 3).await?;
+        let store = MemStore::<DefaultParams>::default();
+        let mut list = List::new(store, 12, 3).await?;
         for i in 0..13 {
             assert_eq!(list.get(i).await?, None);
             assert_eq!(list.len().await?, i);
@@ -304,11 +320,9 @@ mod tests {
 
     #[async_std::test]
     async fn test_list_from() -> Result<()> {
-        let store = MemStore::<DagCborCodec, Multihash>::new();
-        let mut config = CacheConfig::new(store, DagCborCodec);
-        config.size = 12;
+        let store = MemStore::<DefaultParams>::default();
         let data: Vec<_> = (0..13).map(|i| i as i64).collect();
-        let mut list = List::from(config, 3, data.clone().into_iter()).await?;
+        let mut list = List::from(store, 12, 3, data.clone().into_iter()).await?;
         let mut data2 = vec![];
         let mut iter = list.iter();
         while let Some(elem) = iter.next().await? {
@@ -324,10 +338,8 @@ mod tests {
         model! {
             Model => let mut vec = Vec::new(),
             Implementation => let mut list = {
-                let store = MemStore::<DagCborCodec, Multihash>::new();
-                let mut config = CacheConfig::new(store,DagCborCodec);
-                config.size =  LEN;
-                let fut = List::new(config, 3);
+                let store = MemStore::<DefaultParams>::default();
+                let fut = List::new(store, LEN,3);
                 task::block_on(fut).unwrap()
             },
             Push(usize)(i in 0..LEN) => {

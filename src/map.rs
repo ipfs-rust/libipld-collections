@@ -1,14 +1,19 @@
 use Bit::{One, Zero};
 
-use libipld::cache::{Cache, CacheConfig, IpldCache, ReadonlyCache};
+use libipld::cache::{Cache, IpldCache};
 use libipld::cbor::DagCbor;
 use libipld::cbor::DagCborCodec;
 use libipld::cid::Cid;
 use libipld::error::Result;
+use libipld::ipld::Ipld;
+use libipld::multihash::Code;
 use libipld::multihash::Hasher;
+use libipld::prelude::{Decode, Encode};
 use libipld::store::Store;
+use libipld::store::StoreParams;
 use libipld::DagCbor;
 use std::cmp::PartialEq;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::iter::once;
 
@@ -17,9 +22,9 @@ const MAP_LEN: usize = 32;
 
 // For testing need a hash with easy collisions
 fn hash(bytes: &[u8]) -> Vec<u8> {
-    use libipld::multihash::{Identity, Sha2_256};
+    use libipld::multihash::{Identity256, Sha2_256};
     if cfg!(test) {
-        Identity::digest(bytes).as_ref().to_vec()
+        Identity256::digest(bytes).as_ref().to_vec()
     } else {
         Sha2_256::digest(bytes).as_ref().to_vec()
     }
@@ -95,12 +100,10 @@ impl<T: DagCbor> FullPath<T> {
     fn new(last: Node<T>, path: Path<T>) -> Self {
         Self { last, path }
     }
+    // collapses last node in the path into the previous one if possible
     fn reduce(&mut self, bucket_size: usize) {
         let last = &self.last;
-        if !last.has_children()
-            && !last.would_overflow_single_bucket(bucket_size)
-            && self.len() != 0
-        {
+        if !last.has_children() && !last.more_entries_than(bucket_size) && self.len() != 0 {
             let next = self.path.pop().unwrap();
             let PathNode { block, idx } = next;
             let entries = self.last.extract();
@@ -111,6 +114,7 @@ impl<T: DagCbor> FullPath<T> {
     fn len(&self) -> usize {
         self.path.len()
     }
+    // collapses all nodes that are possible into previous ones
     fn full_reduce(&mut self, bucket_size: usize) {
         let mut old = self.len();
         let mut new = 0;
@@ -119,7 +123,7 @@ impl<T: DagCbor> FullPath<T> {
             self.reduce(bucket_size);
             new = self.len();
         }
-        self.last.flatten();
+        self.last.unset_empty();
     }
 }
 
@@ -136,7 +140,7 @@ enum InsertError<T: DagCbor> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum DeleteError {
+enum RemoveError {
     Id(Cid, usize),
 }
 
@@ -236,14 +240,9 @@ impl<T: DagCbor> Node<T> {
         }
     }
     fn has_children(&self) -> bool {
-        for elt in self.data.iter() {
-            if elt.is_hash_node() {
-                return true;
-            }
-        }
-        false
+        self.data.iter().any(|elt| elt.is_hash_node())
     }
-    fn would_overflow_single_bucket(&self, bucket_size: usize) -> bool {
+    fn more_entries_than(&self, bucket_size: usize) -> bool {
         let mut acc = 0_usize;
         for elt in self.data.iter() {
             if let Element::Bucket(bucket) = elt {
@@ -276,7 +275,7 @@ impl<T: DagCbor> Node<T> {
             One => self.data.get(idx as usize),
         }
     }
-    fn flatten(&mut self) {
+    fn unset_empty(&mut self) {
         for bit in 0..=255 {
             match self.get(bit) {
                 Some(Element::Bucket(bucket)) if bucket.is_empty() => {
@@ -330,7 +329,7 @@ impl<T: DagCbor> Node<T> {
             }
             One => {
                 match &mut self.data[data_index] {
-                    Element::HashNode(cid) => Err(Id(entry, cid.clone(), data_index)),
+                    Element::HashNode(cid) => Err(Id(entry, *cid, data_index)),
                     Element::Bucket(ref mut bucket) => {
                         let found = bucket
                             .iter_mut()
@@ -365,8 +364,8 @@ impl<T: DagCbor> Node<T> {
         }
         Ok(())
     }
-    fn delete(&mut self, level: usize, key: &[u8], hash: &[u8]) -> Result<(), DeleteError> {
-        use DeleteError::Id;
+    fn remove(&mut self, level: usize, key: &[u8], hash: &[u8]) -> Result<(), RemoveError> {
+        use RemoveError::Id;
         let map_index = hash[level];
         let bit = get_bit(&self.map, map_index);
         let data_index = popcount(&self.map, map_index) as usize;
@@ -375,10 +374,10 @@ impl<T: DagCbor> Node<T> {
             One => {
                 let elt = &mut self.data[data_index];
                 match elt {
-                    Element::HashNode(cid) => Err(Id(cid.clone(), data_index)),
+                    Element::HashNode(cid) => Err(Id(*cid, data_index)),
                     Element::Bucket(bucket) if bucket.len() != 1 => {
                         for i in 0..bucket.len() {
-                            if bucket[i].key == key {
+                            if &*bucket[i].key == key {
                                 bucket.remove(i);
                                 return Ok(());
                             }
@@ -420,13 +419,16 @@ impl<T: DagCbor> Element<T> {
 
 #[derive(Clone, Debug, Eq, PartialEq, DagCbor)]
 struct Entry<T: DagCbor> {
-    key: Vec<u8>,
+    key: Box<[u8]>,
     value: T,
 }
 
 impl<T: DagCbor> Entry<T> {
-    pub fn new(key: Vec<u8>, value: T) -> Self {
-        Entry { key, value }
+    pub fn new<I: Into<Box<[u8]>>>(key: I, value: T) -> Self {
+        Entry {
+            key: key.into(),
+            value,
+        }
     }
     fn with_hash(self) -> EntryWithHash<T> {
         let hash = hash(&self.key);
@@ -457,7 +459,7 @@ struct EntryWithHash<T: DagCbor> {
     hash: Vec<u8>,
 }
 
-pub struct Hamt<S, T: DagCbor> {
+pub struct Hamt<S: Store, T: DagCbor> {
     bucket_size: usize,
     nodes: IpldCache<S, DagCborCodec, Node<T>>,
     root: Cid,
@@ -465,9 +467,24 @@ pub struct Hamt<S, T: DagCbor> {
 
 impl<S: Store, T: Clone + DagCbor + Send + Sync> Hamt<S, T>
 where
-    S::Codec: Into<DagCborCodec>,
-    <S as libipld::store::ReadonlyStore>::Codec: std::convert::From<DagCborCodec>,
+    S: Store,
+    S::Params: StoreParams<Hashes = Code>,
+    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
+    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
+    T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
+    Ipld: Decode<<S::Params as StoreParams>::Codecs>,
 {
+    pub async fn from<I: Into<Box<[u8]>>>(
+        store: S,
+        cache_size: usize,
+        btree: BTreeMap<I, T>,
+    ) -> Result<Self> {
+        let mut hamt = Hamt::new(store, cache_size).await?;
+        for (key, value) in btree {
+            hamt.insert(key.into(), value).await?;
+        }
+        Ok(hamt)
+    }
     // retrace the path traveled backwards, "bubbling up" the changes
     async fn bubble_up(&mut self, full_path: FullPath<T>) -> Result<Cid> {
         let FullPath {
@@ -484,8 +501,8 @@ where
         }
         Ok(cid)
     }
-    pub async fn new(config: CacheConfig<S, DagCborCodec>) -> Result<Self> {
-        let cache = IpldCache::new(config);
+    pub async fn new(store: S, cache_size: usize) -> Result<Self> {
+        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
         let root = cache.insert(Node::new()).await?;
         Ok(Self {
             bucket_size: BUCKET_SIZE,
@@ -494,8 +511,8 @@ where
         })
     }
 
-    pub async fn open(config: CacheConfig<S, DagCborCodec>, root: Cid) -> Result<Self> {
-        let cache = IpldCache::new(config);
+    pub async fn open(store: S, cache_size: usize, root: Cid) -> Result<Self> {
+        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
         // warm up the cache and make sure it's available
         cache.get(&root).await?;
         Ok(Self {
@@ -522,7 +539,7 @@ where
                 Element::HashNode(cid) => self.nodes.get(&cid).await?,
                 Element::Bucket(bucket) => {
                     for elt in bucket {
-                        if elt.key.as_slice() == key {
+                        if &*elt.key == key {
                             let Entry { value, .. } = elt;
                             return Ok(Some(value));
                         }
@@ -537,7 +554,7 @@ where
     pub fn root(&self) -> &Cid {
         &self.root
     }
-    pub async fn insert(&mut self, key: Vec<u8>, value: T) -> Result<()> {
+    pub async fn insert(&mut self, key: Box<[u8]>, value: T) -> Result<()> {
         let mut queue = Queue::new();
         let hash_len = hash(&key).len();
         queue.add(Entry::new(key, value));
@@ -571,8 +588,8 @@ where
         }
         todo!("Output error due to maximum collision depth reached");
     }
-    pub async fn delete(&mut self, key: &[u8]) -> Result<()> {
-        use DeleteError::Id;
+    pub async fn remove(&mut self, key: &[u8]) -> Result<()> {
+        use RemoveError::Id;
         let hash = hash(key);
         let hash_len = hash.len();
         let mut path = Path::new();
@@ -580,7 +597,7 @@ where
         let mut current = self.nodes.get(&self.root).await?;
         // validate_or_empty!(current);
         for lvl in 0..hash_len {
-            match current.delete(lvl, key, &hash) {
+            match current.remove(lvl, key, &hash) {
                 Ok(_) => {
                     let mut full_path = path.record_last(current);
                     full_path.full_reduce(self.bucket_size);
@@ -604,7 +621,7 @@ mod tests {
     use super::*;
     use async_std::task;
     use libipld::mem::MemStore;
-    use libipld::multihash::Multihash;
+    use libipld::store::DefaultParams;
     use proptest::prelude::*;
 
     #[test]
@@ -674,45 +691,50 @@ mod tests {
         }
     }
 
-    async fn dummy_hamt() -> Hamt<MemStore<DagCborCodec, Multihash>, u8> {
-        let store = MemStore::new();
-        let config = CacheConfig::new(store, DagCborCodec);
-        Hamt::new(config).await.unwrap()
+    async fn dummy_hamt() -> Hamt<MemStore<DefaultParams>, u8> {
+        let store = MemStore::default();
+        Hamt::new(store, 12).await.unwrap()
+    }
+
+    #[async_std::test]
+    async fn test_dummy_hamt() {
+        let hamt = dummy_hamt().await;
+        assert_eq!(
+            &[
+                17, 5, 205, 113, 186, 135, 108, 41, 45, 228, 103, 3, 117, 148, 111, 12, 194, 34,
+                144, 30, 201, 157, 222, 81, 41, 154, 114, 30, 207, 222, 150, 53
+            ],
+            hamt.root.hash().digest()
+        );
     }
 
     #[test]
     fn test_node_insert() {
         let mut node = dummy_node();
         assert_eq!(
-            node.insert(0, Entry::new(vec![0, 0, 0], 0).with_hash(), 3),
+            node.insert(0, Entry::new([0, 0, 0], 0).with_hash(), 3),
             Ok(())
         );
         assert_eq!(
-            node.insert(0, Entry::new(vec![0, 0, 1], 0).with_hash(), 3),
+            node.insert(0, Entry::new([0, 0, 1], 0).with_hash(), 3),
             Ok(())
         );
         assert_eq!(
-            node.insert(0, Entry::new(vec![0, 0, 2], 1).with_hash(), 3),
+            node.insert(0, Entry::new([0, 0, 2], 1).with_hash(), 3),
             Ok(())
         );
         assert!(node
-            .insert(0, Entry::new(vec![0, 0, 3], 3).with_hash(), 3)
+            .insert(0, Entry::new([0, 0, 3], 3).with_hash(), 3)
             .unwrap_err()
             .is_overflow());
     }
     #[test]
-    fn test_node_delete() {
+    fn test_node_remove() {
         let mut node = dummy_node();
-        assert_eq!(
-            node.insert(1, Entry::new(vec![0, 0], 0).with_hash(), 1),
-            Ok(())
-        );
-        assert_eq!(
-            node.insert(1, Entry::new(vec![0, 1], 0).with_hash(), 1),
-            Ok(())
-        );
-        assert_eq!(node.delete(1, &[0, 0], &[0, 0]), Ok(()));
-        assert_eq!(node.delete(1, &[0, 1], &[0, 1]), Ok(()));
+        assert_eq!(node.insert(1, Entry::new([0, 0], 0).with_hash(), 1), Ok(()));
+        assert_eq!(node.insert(1, Entry::new([0, 1], 0).with_hash(), 1), Ok(()));
+        assert_eq!(node.remove(1, &[0, 0], &[0, 0]), Ok(()));
+        assert_eq!(node.remove(1, &[0, 1], &[0, 1]), Ok(()));
         assert_eq!(node, dummy_node());
     }
 
@@ -720,18 +742,18 @@ mod tests {
     fn test_node_methods() {
         let mut node = dummy_node();
         let entries = vec![
-            Entry::new(vec![0, 0, 0], 0),
-            Entry::new(vec![0, 0, 1], 0),
-            Entry::new(vec![0, 0, 2], 0),
-            Entry::new(vec![1, 0, 2], 0),
+            Entry::new([0, 0, 0], 0),
+            Entry::new([0, 0, 1], 0),
+            Entry::new([0, 0, 2], 0),
+            Entry::new([1, 0, 2], 0),
         ];
         for elt in entries.iter().take(3) {
             let _ = node.insert(0, elt.clone().with_hash(), 3);
         }
         assert!(!node.has_children());
-        assert!(!node.would_overflow_single_bucket(3));
+        assert!(!node.more_entries_than(3));
         let _ = node.insert(0, entries[3].clone().with_hash(), 3);
-        assert!(node.would_overflow_single_bucket(3));
+        assert!(node.more_entries_than(3));
         assert_eq!(node.extract(), entries);
 
         let mut node: Node<u8> = Node::new();
@@ -780,7 +802,7 @@ mod tests {
     #[async_std::test]
     async fn test_reduce() {
         let size = 2;
-        let entries = vec![Entry::new(vec![0, 0], 0), Entry::new(vec![0, 1], 0)];
+        let entries = vec![Entry::new([0, 0], 0), Entry::new([0, 1], 0)];
         let mut node = Node::new();
         node.set(0, Element::HashNode(Cid::default()));
         let mut path = Path::new();
@@ -798,11 +820,18 @@ mod tests {
 
     #[async_std::test]
     async fn test_hamt_insert() {
+        // insert single element
         let mut hamt = dummy_hamt().await;
-        let entry1 = Entry::new(vec![0, 0, 0], 0);
-        let entry2 = Entry::new(vec![0, 0, 1], 0);
-        let entry3 = Entry::new(vec![0, 0, 2], 0);
-        let entry4 = Entry::new(vec![0, 0, 3], 0);
+        let entry = Entry::new([0, 0, 0], 0);
+        hamt.insert(entry.key, entry.value).await.unwrap();
+        let mut node = Node::new();
+        let _ = node.insert(0, Entry::new([0, 0, 0], 0).with_hash(), 3);
+        assert_eq!(node, hamt.nodes.get(&hamt.root).await.unwrap());
+        let mut hamt = dummy_hamt().await;
+        let entry1 = Entry::new([0, 0, 0], 0);
+        let entry2 = Entry::new([0, 0, 1], 0);
+        let entry3 = Entry::new([0, 0, 2], 0);
+        let entry4 = Entry::new([0, 0, 3], 0);
         let entries = vec![entry1, entry2, entry3, entry4];
         let copy = entries.clone();
         for entry in entries {
@@ -812,8 +841,8 @@ mod tests {
         assert_eq!(
             &hamt.root.hash().digest(),
             &[
-                132, 126, 153, 26, 63, 11, 44, 118, 124, 73, 125, 82, 166, 48, 53, 80, 229, 195,
-                86, 35, 30, 230, 79, 12, 206, 112, 41, 193, 152, 161, 144, 236
+                10, 133, 110, 7, 1, 116, 103, 149, 130, 193, 198, 132, 161, 142, 33, 76, 89, 142,
+                81, 181, 60, 135, 167, 116, 140, 112, 168, 13, 40, 172, 223, 90
             ]
         );
         assert!(node
@@ -830,8 +859,8 @@ mod tests {
             let _ = task::block_on(batch_set_and_get(batch)).unwrap();
         }
         #[test]
-        fn test_hamt_delete_and_get(batch in prop::collection::vec((prop::collection::vec(0..=255u8, 6), 0..1u8), 20)) {
-            let _ = task::block_on(batch_delete_and_get(batch)).unwrap();
+        fn test_hamt_remove_and_get(batch in prop::collection::vec((prop::collection::vec(0..=255u8, 6), 0..1u8), 20)) {
+            let _ = task::block_on(batch_remove_and_get(batch)).unwrap();
         }
     }
 
@@ -839,13 +868,13 @@ mod tests {
         let mut hamt = dummy_hamt().await;
         for elt in batch.into_iter() {
             let (key, val) = elt;
-            hamt.insert(key.clone(), val).await?;
+            hamt.insert(key.clone().into(), val).await?;
             let elt = hamt.get(&key).await?;
             assert_eq!(elt, Some(val));
         }
         Ok(())
     }
-    async fn batch_delete_and_get(mut batch: Vec<(Vec<u8>, u8)>) -> Result<()> {
+    async fn batch_remove_and_get(mut batch: Vec<(Vec<u8>, u8)>) -> Result<()> {
         let mut other = dummy_hamt().await;
         let mut hamt = dummy_hamt().await;
         let size = batch.len();
@@ -855,22 +884,22 @@ mod tests {
         batch.dedup_by(|a, b| a.0 == b.0);
 
         let insert_batch = batch.clone();
-        let mut delete_batch = vec![];
+        let mut remove_batch = vec![];
         let mut get_batch = vec![];
         for (counter, elt) in batch.into_iter().enumerate() {
             if counter <= size / 2 {
                 get_batch.push(elt);
             } else {
-                delete_batch.push(elt);
+                remove_batch.push(elt);
             }
         }
         for elt in insert_batch.into_iter() {
             let (key, val) = elt;
-            hamt.insert(key.clone(), val).await?;
+            hamt.insert(key.clone().into(), val).await?;
         }
-        for elt in delete_batch.into_iter() {
+        for elt in remove_batch.into_iter() {
             let (key, _) = elt;
-            hamt.delete(&key).await?;
+            hamt.remove(&key).await?;
         }
 
         // inserting n elements into a hamt other should give equal root cid as
@@ -878,10 +907,10 @@ mod tests {
         let insert_other_batch = get_batch.clone();
         for elt in insert_other_batch.into_iter() {
             let (key, val) = elt;
-            other.insert(key.clone(), val).await?;
+            other.insert(key.clone().into(), val).await?;
         }
 
-        // the non-deleted elements should be retrievable
+        // the non-removed elements should be retrievable
         for elt in get_batch.into_iter() {
             let (key, _) = elt;
             assert!(hamt.get(&key).await?.is_some());
@@ -891,13 +920,13 @@ mod tests {
         Ok(())
     }
     #[async_std::test]
-    async fn test_delete() {
+    async fn test_remove() {
         // first deletion test
         let mut other = dummy_hamt().await;
         let mut hamt = dummy_hamt().await;
         let entries = vec![
-            Entry::new(vec![0, 0], 0),
-            Entry::new(vec![0, 1], 0),
+            Entry::new([0, 0], 0),
+            Entry::new([0, 1], 0),
             // Entry::new(vec![0, 2], 0),
             // Entry::new(vec![0, 3], 0),
         ];
@@ -906,37 +935,10 @@ mod tests {
             hamt.insert(entry.key, entry.value).await.unwrap();
         }
         let entry = entries_clone.pop().unwrap();
-        other
-            .insert(entry.clone().key, entry.clone().value)
-            .await
-            .unwrap();
+        other.insert(entry.key, entry.value).await.unwrap();
         for entry in entries_clone {
-            hamt.delete(&entry.key).await.unwrap();
+            hamt.remove(&entry.key).await.unwrap();
         }
         assert_eq!(hamt.root, other.root);
-
-        // second delete test
-        // let empty = dummy_hamt().await;
-        // let mut hamt = dummy_hamt().await;
-        // let entries = vec![
-        //     Entry::new(vec![0, 0], 0),
-        //     Entry::new(vec![0, 1], 0),
-        //     // Entry::new(vec![0, 2], 0),
-        //     // Entry::new(vec![0, 3], 0),
-        // ];
-        // let entries_clone = entries.clone();
-        // for entry in entries {
-        //     hamt.insert(entry.key, entry.value).await.unwrap();
-        // }
-        // for entry in entries_clone {
-        //     hamt.delete(&entry.key).await.unwrap();
-        // }
-        // let node = hamt.nodes.get(&hamt.root).await.unwrap();
-        // let cid = first_cid(&node);
-        // let next = hamt.nodes.get(&cid).await.unwrap();
-
-        // dbg!(hamt.nodes.get(cid).await.unwrap());
-        // dbg!(hamt.nodes.get(&hamt.root).await.unwrap());
-        // assert_eq!(hamt.root, empty.root);
     }
 }
