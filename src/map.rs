@@ -6,8 +6,8 @@ use libipld::cbor::DagCborCodec;
 use libipld::cid::Cid;
 use libipld::error::Result;
 use libipld::ipld::Ipld;
+use libipld::multihash::Code;
 use libipld::multihash::Hasher;
-use libipld::multihash::BLAKE2B_256;
 use libipld::prelude::{Decode, Encode};
 use libipld::store::Store;
 use libipld::store::StoreParams;
@@ -459,7 +459,7 @@ struct EntryWithHash<T: DagCbor> {
     hash: Vec<u8>,
 }
 
-pub struct Hamt<S, T: DagCbor> {
+pub struct Hamt<S: Store, T: DagCbor> {
     bucket_size: usize,
     nodes: IpldCache<S, DagCborCodec, Node<T>>,
     root: Cid,
@@ -468,6 +468,7 @@ pub struct Hamt<S, T: DagCbor> {
 impl<S: Store, T: Clone + DagCbor + Send + Sync> Hamt<S, T>
 where
     S: Store,
+    S::Params: StoreParams<Hashes = Code>,
     <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
     DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
     T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
@@ -501,7 +502,7 @@ where
         Ok(cid)
     }
     pub async fn new(store: S, cache_size: usize) -> Result<Self> {
-        let cache = IpldCache::new(store, DagCborCodec, BLAKE2B_256, cache_size);
+        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
         let root = cache.insert(Node::new()).await?;
         Ok(Self {
             bucket_size: BUCKET_SIZE,
@@ -511,7 +512,7 @@ where
     }
 
     pub async fn open(store: S, cache_size: usize, root: Cid) -> Result<Self> {
-        let cache = IpldCache::new(store, DagCborCodec, BLAKE2B_256, cache_size);
+        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
         // warm up the cache and make sure it's available
         cache.get(&root).await?;
         Ok(Self {

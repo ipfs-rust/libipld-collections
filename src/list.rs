@@ -5,7 +5,7 @@ use libipld::cbor::DagCborCodec;
 use libipld::cid::Cid;
 use libipld::error::Result;
 use libipld::ipld::Ipld;
-use libipld::multihash::BLAKE2B_256;
+use libipld::multihash::Code;
 use libipld::prelude::{Decode, Encode};
 use libipld::store::Store;
 use libipld::store::StoreParams;
@@ -68,7 +68,7 @@ impl<T: DagCbor> Node<T> {
     }
 }
 
-pub struct List<S, T: DagCbor> {
+pub struct List<S: Store, T: DagCbor> {
     nodes: IpldCache<S, DagCborCodec, Node<T>>,
     root: Cid,
 }
@@ -76,19 +76,20 @@ pub struct List<S, T: DagCbor> {
 impl<S: Store, T: Clone + DagCbor + Send + Sync> List<S, T>
 where
     S: Store,
+    S::Params: StoreParams<Hashes = Code>,
     <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
     T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
     DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
     Ipld: Decode<<S::Params as StoreParams>::Codecs>,
 {
     pub async fn new(store: S, cache_size: usize, width: u32) -> Result<Self> {
-        let cache = IpldCache::new(store, DagCborCodec, BLAKE2B_256, cache_size);
+        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
         let root = cache.insert(Node::new(width, 0, vec![])).await?;
         Ok(Self { nodes: cache, root })
     }
 
     pub async fn open(store: S, cache_size: usize, root: Cid) -> Result<Self> {
-        let cache = IpldCache::new(store, DagCborCodec, BLAKE2B_256, cache_size);
+        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
         // warm up the cache and make sure it's available
         cache.get(&root).await?;
         Ok(Self { nodes: cache, root })
@@ -104,7 +105,7 @@ where
         cache_size: usize,
         items: impl Iterator<Item = T>,
     ) -> Result<Self> {
-        let cache = IpldCache::new(store, DagCborCodec, BLAKE2B_256, cache_size);
+        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
 
         let mut items: Vec<Data<T>> = items.map(Data::Value).collect();
         let mut height = 0;
@@ -264,7 +265,7 @@ where
     }
 }
 
-pub struct Iter<'a, S, T: DagCbor> {
+pub struct Iter<'a, S: Store, T: DagCbor> {
     list: &'a mut List<S, T>,
     index: usize,
 }
@@ -272,6 +273,7 @@ pub struct Iter<'a, S, T: DagCbor> {
 impl<'a, S, T: DagCbor> Iter<'a, S, T>
 where
     S: Store,
+    S::Params: StoreParams<Hashes = Code>,
     <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
     T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
     DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
