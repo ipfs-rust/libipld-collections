@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "ipld-collections"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-std 1.6.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "criterion 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
