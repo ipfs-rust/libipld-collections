@@ -1,5 +1,5 @@
-pub mod list;
-pub mod map;
+mod list;
+//mod map;
 
-pub use list::List;
-pub use map::Hamt;
+pub use list::{List, ListConfig, ListIter};
+//pub use map::Hamt;

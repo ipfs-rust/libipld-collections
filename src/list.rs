@@ -5,38 +5,296 @@ use libipld::cbor::DagCborCodec;
 use libipld::cid::Cid;
 use libipld::error::Result;
 use libipld::ipld::Ipld;
-use libipld::multihash::Code;
-use libipld::prelude::{Decode, Encode};
+use libipld::prelude::{Decode, Encode, References};
 use libipld::store::Store;
 use libipld::store::StoreParams;
 use libipld::DagCbor;
 
-#[derive(Clone, Debug, DagCbor)]
-pub enum Data<T: DagCbor> {
-    Value(T),
-    Link(Cid),
+pub struct ListConfig<S>
+where
+    S: Store,
+    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
+    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
+    Ipld: References<<S::Params as StoreParams>::Codecs>,
+{
+    store: S,
+    cache_size: usize,
+    hash: <S::Params as StoreParams>::Hashes,
+    width: Option<usize>,
 }
 
-impl<T: DagCbor> Data<T> {
-    fn value(&self) -> Option<&T> {
-        if let Self::Value(value) = self {
-            Some(value)
-        } else {
-            None
+impl<S: Store> ListConfig<S>
+where
+    S: Store,
+    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
+    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
+    Ipld: References<<S::Params as StoreParams>::Codecs>,
+{
+    pub fn new(store: S, hash: <S::Params as StoreParams>::Hashes) -> Self {
+        Self {
+            store,
+            cache_size: 64,
+            hash,
+            width: None,
         }
     }
 
-    fn cid(&self) -> Option<&Cid> {
-        if let Self::Link(cid) = self {
-            Some(cid)
+    pub fn set_cache_size(&mut self, cache_size: usize) {
+        self.cache_size = cache_size;
+    }
+
+    pub fn set_width(&mut self, width: usize) {
+        self.width = Some(width);
+    }
+
+    fn width<T>(&self) -> usize {
+        if let Some(width) = self.width {
+            width
         } else {
-            None
+            let elem_size = usize::max(std::mem::size_of::<T>(), std::mem::size_of::<Cid>());
+            <S::Params as StoreParams>::MAX_BLOCK_SIZE / elem_size
         }
+    }
+
+    fn cache<T>(self) -> IpldCache<S, DagCborCodec, Node<T>>
+    where
+        T: DagCbor + Clone + Send + Sync,
+    {
+        IpldCache::new(self.store, DagCborCodec, self.hash, self.cache_size)
+    }
+}
+
+pub struct List<S: Store, T: DagCbor> {
+    cache: IpldCache<S, DagCborCodec, Node<T>>,
+    root: Cid,
+    tmp: S::TempPin,
+}
+
+impl<S: Store, T: Clone + DagCbor + Send + Sync> List<S, T>
+where
+    S: Store,
+    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
+    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
+    Ipld: References<<S::Params as StoreParams>::Codecs>,
+    T: DagCbor + Clone + Send + Sync,
+{
+    pub async fn new(config: ListConfig<S>) -> Result<Self> {
+        let width = config.width::<T>();
+        let cache = config.cache();
+        let tmp = cache.temp_pin().await?;
+        let root = cache
+            .insert(Node::new(width as _, 0, vec![]), Some(&tmp))
+            .await?;
+        Ok(Self { cache, root, tmp })
+    }
+
+    pub async fn open(config: ListConfig<S>, root: Cid) -> Result<Self> {
+        let cache = config.cache();
+        let tmp = cache.temp_pin().await?;
+        // warm up the cache and make sure it's available
+        cache.get(&root, Some(&tmp)).await?;
+        Ok(Self { cache, root, tmp })
+    }
+
+    pub fn root(&self) -> &Cid {
+        &self.root
+    }
+
+    pub async fn from(config: ListConfig<S>, items: impl Iterator<Item = T>) -> Result<Self> {
+        let width = config.width::<T>();
+        let cache = config.cache();
+        let tmp = cache.temp_pin().await?;
+
+        let mut items: Vec<Data<T>> = items.map(Data::Value).collect();
+        let mut height = 0;
+        let mut cid = cache
+            .insert(Node::new(width as _, height, vec![]), Some(&tmp))
+            .await?;
+
+        loop {
+            let n_items = items.len() / width + 1;
+            let mut items_next = Vec::with_capacity(n_items);
+            for chunk in items.chunks(width) {
+                let node = Node::new(width as u32, height, chunk.to_vec());
+                cid = cache.insert(node, Some(&tmp)).await?;
+                items_next.push(Data::Link(cid));
+            }
+            if items_next.len() == 1 {
+                return Ok(Self {
+                    cache,
+                    root: cid,
+                    tmp,
+                });
+            }
+            items = items_next;
+            height += 1;
+        }
+    }
+
+    pub async fn push(&mut self, value: T) -> Result<()> {
+        let mut value = Data::Value(value);
+        let root = self.cache.get(&self.root, Some(&self.tmp)).await?;
+        let height = root.height();
+        let width = root.width();
+
+        let chain = {
+            let mut height = root.height();
+            let mut chain = Vec::with_capacity(height as usize + 1);
+            chain.push(root);
+            while height > 0 {
+                let cid = chain
+                    .last()
+                    .expect("at least one block")
+                    .data()
+                    .last()
+                    .expect("at least one link")
+                    .cid()
+                    .expect("height > 0, payload must be a cid");
+                let node = self.cache.get(cid, Some(&self.tmp)).await?;
+                height = node.height();
+                chain.push(node);
+            }
+            chain
+        };
+
+        let mut mutated = false;
+        let mut last = self
+            .cache
+            .insert(Node::new(width as u32, height, vec![]), Some(&self.tmp))
+            .await?;
+        for mut node in chain.into_iter().rev() {
+            if mutated {
+                let data = node.data_mut();
+                data.pop();
+                data.push(value);
+                last = self.cache.insert(node, Some(&self.tmp)).await?;
+                value = Data::Link(last);
+            } else {
+                let data = node.data_mut();
+                if data.len() < width {
+                    data.push(value);
+                    last = self.cache.insert(node, Some(&self.tmp)).await?;
+                    value = Data::Link(last);
+                    mutated = true;
+                } else {
+                    let node = Node::new(width as u32, node.height(), vec![value]);
+                    last = self.cache.insert(node, Some(&self.tmp)).await?;
+                    value = Data::Link(last);
+                    mutated = false;
+                }
+            }
+        }
+
+        if !mutated {
+            let children = vec![Data::Link(*self.root()), value];
+            let node = Node::new(width as u32, height + 1, children);
+            last = self.cache.insert(node, Some(&self.tmp)).await?;
+        }
+
+        self.root = last;
+
+        Ok(())
+    }
+
+    pub async fn pop(&mut self) -> Result<Option<T>> {
+        // TODO
+        Ok(None)
+    }
+
+    pub async fn get(&mut self, mut index: usize) -> Result<Option<T>> {
+        let node = self.cache.get(&self.root, Some(&self.tmp)).await?;
+        let mut node_ref = &node;
+        let width = node.width();
+        let mut height = node.height();
+        let mut node;
+
+        if index > width.pow(height + 1) {
+            return Ok(None);
+        }
+
+        loop {
+            let data_index = index / width.pow(height);
+            if let Some(data) = node_ref.data().get(data_index) {
+                if height == 0 {
+                    return Ok(Some(data.value().unwrap().clone()));
+                }
+                let cid = data.cid().unwrap();
+                node = self.cache.get(cid, Some(&self.tmp)).await?;
+                node_ref = &node;
+                index %= width.pow(height);
+                height = node.height();
+            } else {
+                return Ok(None);
+            }
+        }
+    }
+
+    pub async fn set(&mut self, _index: usize, _value: T) -> Result<()> {
+        // TODO
+        Ok(())
+    }
+
+    pub async fn len(&mut self) -> Result<usize> {
+        let root = self.cache.get(&self.root, Some(&self.tmp)).await?;
+        let width = root.width();
+        let mut height = root.height();
+        let mut size = width.pow(height + 1);
+        let mut node = root;
+        loop {
+            let data = node.data();
+            size -= width.pow(height) * (width - data.len());
+            if height == 0 {
+                return Ok(size);
+            }
+            let cid = data.last().unwrap().cid().unwrap();
+            node = self.cache.get(cid, Some(&self.tmp)).await?;
+            height = node.height();
+        }
+    }
+
+    pub async fn is_empty(&mut self) -> Result<bool> {
+        let root = self.cache.get(&self.root, Some(&self.tmp)).await?;
+        Ok(root.data().is_empty())
+    }
+
+    pub fn iter(&mut self) -> ListIter<'_, S, T> {
+        ListIter {
+            list: self,
+            index: 0,
+        }
+    }
+
+    pub async fn flush<A: AsRef<[u8]> + Send + Sync>(&mut self, alias: A) -> Result<()> {
+        self.cache.alias(alias, Some(self.root())).await?;
+        self.tmp = self.cache.temp_pin().await?;
+        self.cache.flush().await?;
+        Ok(())
+    }
+}
+
+pub struct ListIter<'a, S: Store, T: DagCbor> {
+    list: &'a mut List<S, T>,
+    index: usize,
+}
+
+impl<'a, S, T: DagCbor> ListIter<'a, S, T>
+where
+    S: Store,
+    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
+    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
+    Ipld: References<<S::Params as StoreParams>::Codecs>,
+    T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
+{
+    #[allow(clippy::should_implement_trait)]
+    pub async fn next(&mut self) -> Result<Option<T>> {
+        let elem = self.list.get(self.index).await?;
+        self.index += 1;
+        Ok(elem)
     }
 }
 
 #[derive(Clone, Debug, DagCbor)]
-pub struct Node<T: DagCbor> {
+struct Node<T: DagCbor> {
     width: u32,
     height: u32,
     data: Vec<Data<T>>,
@@ -68,222 +326,27 @@ impl<T: DagCbor> Node<T> {
     }
 }
 
-pub struct List<S: Store, T: DagCbor> {
-    nodes: IpldCache<S, DagCborCodec, Node<T>>,
-    root: Cid,
+#[derive(Clone, Debug, DagCbor)]
+enum Data<T: DagCbor> {
+    Value(T),
+    Link(Cid),
 }
 
-impl<S: Store, T: Clone + DagCbor + Send + Sync> List<S, T>
-where
-    S: Store,
-    S::Params: StoreParams<Hashes = Code>,
-    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
-    T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
-    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
-    Ipld: Decode<<S::Params as StoreParams>::Codecs>,
-{
-    pub async fn new(store: S, cache_size: usize, width: u32) -> Result<Self> {
-        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
-        let root = cache.insert(Node::new(width, 0, vec![])).await?;
-        Ok(Self { nodes: cache, root })
-    }
-
-    pub async fn open(store: S, cache_size: usize, root: Cid) -> Result<Self> {
-        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
-        // warm up the cache and make sure it's available
-        cache.get(&root).await?;
-        Ok(Self { nodes: cache, root })
-    }
-
-    pub fn root(&self) -> &Cid {
-        &self.root
-    }
-
-    pub async fn from(
-        store: S,
-        width: u32,
-        cache_size: usize,
-        items: impl Iterator<Item = T>,
-    ) -> Result<Self> {
-        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
-
-        let mut items: Vec<Data<T>> = items.map(Data::Value).collect();
-        let mut height = 0;
-        let mut cid = cache.insert(Node::new(width, height, vec![])).await?;
-        let width = width as usize;
-
-        loop {
-            let n_items = items.len() / width + 1;
-            let mut items_next = Vec::with_capacity(n_items);
-            for chunk in items.chunks(width) {
-                let node = Node::new(width as u32, height, chunk.to_vec());
-                cid = cache.insert(node).await?;
-                items_next.push(Data::Link(cid));
-            }
-            if items_next.len() == 1 {
-                return Ok(Self {
-                    nodes: cache,
-                    root: cid,
-                });
-            }
-            items = items_next;
-            height += 1;
+impl<T: DagCbor> Data<T> {
+    fn value(&self) -> Option<&T> {
+        if let Self::Value(value) = self {
+            Some(value)
+        } else {
+            None
         }
     }
 
-    pub async fn push(&mut self, value: T) -> Result<()> {
-        let mut value = Data::Value(value);
-        let root = self.nodes.get(&self.root).await?;
-        let height = root.height();
-        let width = root.width();
-
-        let chain = {
-            let mut height = root.height();
-            let mut chain = Vec::with_capacity(height as usize + 1);
-            chain.push(root);
-            while height > 0 {
-                let cid = chain
-                    .last()
-                    .expect("at least one block")
-                    .data()
-                    .last()
-                    .expect("at least one link")
-                    .cid()
-                    .expect("height > 0, payload must be a cid");
-                let node = self.nodes.get(cid).await?;
-                height = node.height();
-                chain.push(node);
-            }
-            chain
-        };
-
-        let mut mutated = false;
-        let cache = &self.nodes;
-        let mut last = cache
-            .insert(Node::new(width as u32, height, vec![]))
-            .await?;
-        for mut node in chain.into_iter().rev() {
-            if mutated {
-                let data = node.data_mut();
-                data.pop();
-                data.push(value);
-                last = cache.insert(node).await?;
-                value = Data::Link(last);
-            } else {
-                let data = node.data_mut();
-                if data.len() < width {
-                    data.push(value);
-                    last = cache.insert(node).await?;
-                    value = Data::Link(last);
-                    mutated = true;
-                } else {
-                    let node = Node::new(width as u32, node.height(), vec![value]);
-                    last = cache.insert(node).await?;
-                    value = Data::Link(last);
-                    mutated = false;
-                }
-            }
+    fn cid(&self) -> Option<&Cid> {
+        if let Self::Link(cid) = self {
+            Some(cid)
+        } else {
+            None
         }
-
-        if !mutated {
-            let children = vec![Data::Link(*self.root()), value];
-            let node = Node::new(width as u32, height + 1, children);
-            last = cache.insert(node).await?;
-        }
-
-        self.root = last;
-
-        Ok(())
-    }
-
-    pub async fn pop(&mut self) -> Result<Option<T>> {
-        // TODO
-        Ok(None)
-    }
-
-    pub async fn get(&mut self, mut index: usize) -> Result<Option<T>> {
-        let node = self.nodes.get(&self.root).await?;
-        let mut node_ref = &node;
-        let width = node.width();
-        let mut height = node.height();
-        let mut node;
-
-        if index > width.pow(height + 1) {
-            return Ok(None);
-        }
-
-        loop {
-            let data_index = index / width.pow(height);
-            if let Some(data) = node_ref.data().get(data_index) {
-                if height == 0 {
-                    return Ok(Some(data.value().unwrap().clone()));
-                }
-                let cid = data.cid().unwrap();
-                node = self.nodes.get(cid).await?;
-                node_ref = &node;
-                index %= width.pow(height);
-                height = node.height();
-            } else {
-                return Ok(None);
-            }
-        }
-    }
-
-    pub async fn set(&mut self, _index: usize, _value: T) -> Result<()> {
-        // TODO
-        Ok(())
-    }
-
-    pub async fn len(&mut self) -> Result<usize> {
-        let root = self.nodes.get(&self.root).await?;
-        let width = root.width();
-        let mut height = root.height();
-        let mut size = width.pow(height + 1);
-        let mut node = root;
-        loop {
-            let data = node.data();
-            size -= width.pow(height) * (width - data.len());
-            if height == 0 {
-                return Ok(size);
-            }
-            let cid = data.last().unwrap().cid().unwrap();
-            node = self.nodes.get(cid).await?;
-            height = node.height();
-        }
-    }
-
-    pub async fn is_empty(&mut self) -> Result<bool> {
-        let root = self.nodes.get(&self.root).await?;
-        Ok(root.data().is_empty())
-    }
-
-    pub fn iter(&mut self) -> Iter<'_, S, T> {
-        Iter {
-            list: self,
-            index: 0,
-        }
-    }
-}
-
-pub struct Iter<'a, S: Store, T: DagCbor> {
-    list: &'a mut List<S, T>,
-    index: usize,
-}
-
-impl<'a, S, T: DagCbor> Iter<'a, S, T>
-where
-    S: Store,
-    S::Params: StoreParams<Hashes = Code>,
-    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
-    T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
-    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
-    Ipld: Decode<<S::Params as StoreParams>::Codecs>,
-{
-    #[allow(clippy::should_implement_trait)]
-    pub async fn next(&mut self) -> Result<Option<T>> {
-        let elem = self.list.get(self.index).await?;
-        self.index += 1;
-        Ok(elem)
     }
 }
 
@@ -292,13 +355,16 @@ mod tests {
     use super::*;
     use async_std::task;
     use libipld::mem::MemStore;
+    use libipld::multihash::Code;
     use libipld::store::DefaultParams;
     use model::*;
 
     #[async_std::test]
     async fn test_list() -> Result<()> {
         let store = MemStore::<DefaultParams>::default();
-        let mut list = List::new(store, 12, 3).await?;
+        let mut config = ListConfig::new(store, Code::Blake3_256);
+        config.set_width(3);
+        let mut list = List::new(config).await?;
         for i in 0..13 {
             assert_eq!(list.get(i).await?, None);
             assert_eq!(list.len().await?, i);
@@ -321,8 +387,10 @@ mod tests {
     #[async_std::test]
     async fn test_list_from() -> Result<()> {
         let store = MemStore::<DefaultParams>::default();
+        let mut config = ListConfig::new(store, Code::Blake3_256);
+        config.set_width(3);
         let data: Vec<_> = (0..13).map(|i| i as i64).collect();
-        let mut list = List::from(store, 12, 3, data.clone().into_iter()).await?;
+        let mut list = List::from(config, data.clone().into_iter()).await?;
         let mut data2 = vec![];
         let mut iter = list.iter();
         while let Some(elem) = iter.next().await? {
@@ -339,7 +407,9 @@ mod tests {
             Model => let mut vec = Vec::new(),
             Implementation => let mut list = {
                 let store = MemStore::<DefaultParams>::default();
-                let fut = List::new(store, LEN,3);
+                let mut config = ListConfig::new(store, Code::Blake3_256);
+                config.set_width(3);
+                let fut = List::new(config);
                 task::block_on(fut).unwrap()
             },
             Push(usize)(i in 0..LEN) => {
@@ -362,5 +432,14 @@ mod tests {
                 assert_eq!(r1, r2);
             }
         }
+    }
+
+    #[async_std::test]
+    async fn test_width() -> Result<()> {
+        let store = MemStore::<DefaultParams>::default();
+        let config = ListConfig::new(store, Code::Blake3_256);
+        let n = DefaultParams::MAX_BLOCK_SIZE / 8 * 10;
+        let _list = List::from(config, (0..n).map(|n| n as u64)).await?;
+        Ok(())
     }
 }

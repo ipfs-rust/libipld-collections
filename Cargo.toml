@@ -1,5 +1,5 @@
 [package]
-name = "ipld-collections"
+name = "libipld-collections"
 version = "0.3.0"
 authors = ["David Craven <david@craven.ch>", "Daniel Craven <daniel@craven.ch>"]
 edition = "2018"
@@ -8,12 +8,13 @@ description = "multiblock ipld collections"
 repository = "https://github.com/ipfs-rust/rust-ipld-collections"
 
 [dependencies]
-libipld = { version = "0.7.0", default-features = false, features = ["dag-cbor", "derive"] }
+libipld = { version = "0.9.0", default-features = false, features = ["dag-cbor", "derive"] }
 
 [dev-dependencies]
-async-std = { version = "1.6.3", features = ["attributes"] }
+async-std = { version = "1.8.0", features = ["attributes"] }
 criterion = "0.3.3"
 model = "0.1.2"
+multihash = { version = "0.13.2", default-features = false, features = ["blake3"] }
 tempdir = "0.3.7"
 proptest = "0.10.1"
 
@@ -27,3 +28,6 @@ harness = false
 
 [profile.release]
 debug = true
+
+[patch.crates-io]
+libipld = { path = "../libipld" }
