@@ -23,7 +23,7 @@ where
     width: Option<usize>,
 }
 
-impl<S: Store> ListConfig<S>
+impl<S> ListConfig<S>
 where
     S: Store,
     <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
@@ -70,7 +70,7 @@ pub struct List<S: Store, T: DagCbor> {
     tmp: S::TempPin,
 }
 
-impl<S: Store, T: Clone + DagCbor + Send + Sync> List<S, T>
+impl<S, T> List<S, T>
 where
     S: Store,
     <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
@@ -362,7 +362,7 @@ mod tests {
     #[async_std::test]
     async fn test_list() -> Result<()> {
         let store = MemStore::<DefaultParams>::default();
-        let mut config = ListConfig::new(store, Code::Blake3_256);
+        let mut config = ListConfig::new(store, Code::Blake2b256);
         config.set_width(3);
         let mut list = List::new(config).await?;
         for i in 0..13 {
@@ -387,7 +387,7 @@ mod tests {
     #[async_std::test]
     async fn test_list_from() -> Result<()> {
         let store = MemStore::<DefaultParams>::default();
-        let mut config = ListConfig::new(store, Code::Blake3_256);
+        let mut config = ListConfig::new(store, Code::Blake2b256);
         config.set_width(3);
         let data: Vec<_> = (0..13).map(|i| i as i64).collect();
         let mut list = List::from(config, data.clone().into_iter()).await?;
@@ -407,7 +407,7 @@ mod tests {
             Model => let mut vec = Vec::new(),
             Implementation => let mut list = {
                 let store = MemStore::<DefaultParams>::default();
-                let mut config = ListConfig::new(store, Code::Blake3_256);
+                let mut config = ListConfig::new(store, Code::Blake2b256);
                 config.set_width(3);
                 let fut = List::new(config);
                 task::block_on(fut).unwrap()
@@ -437,7 +437,7 @@ mod tests {
     #[async_std::test]
     async fn test_width() -> Result<()> {
         let store = MemStore::<DefaultParams>::default();
-        let config = ListConfig::new(store, Code::Blake3_256);
+        let config = ListConfig::new(store, Code::Blake2b256);
         let n = DefaultParams::MAX_BLOCK_SIZE / 8 * 10;
         let _list = List::from(config, (0..n).map(|n| n as u64)).await?;
         Ok(())

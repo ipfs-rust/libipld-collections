@@ -9,12 +9,13 @@ repository = "https://github.com/ipfs-rust/rust-ipld-collections"
 
 [dependencies]
 libipld = { version = "0.9.0", default-features = false, features = ["dag-cbor", "derive"] }
+multihash = { version = "0.13.2", default-features = false, features = ["sha2"] }
 
 [dev-dependencies]
 async-std = { version = "1.8.0", features = ["attributes"] }
 criterion = "0.3.3"
 model = "0.1.2"
-multihash = { version = "0.13.2", default-features = false, features = ["blake3"] }
+multihash = { version = "0.13.2", default-features = false, features = ["blake2b"] }
 tempdir = "0.3.7"
 proptest = "0.10.1"
 
