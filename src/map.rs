@@ -1,28 +1,21 @@
 use Bit::{One, Zero};
 
 use libipld::cache::{Cache, IpldCache};
-use libipld::cbor::DagCbor;
-use libipld::cbor::DagCborCodec;
-use libipld::cid::Cid;
-use libipld::error::Result;
-use libipld::ipld::Ipld;
-use libipld::multihash::Code;
-use libipld::multihash::Hasher;
-use libipld::prelude::{Decode, Encode};
-use libipld::store::Store;
-use libipld::store::StoreParams;
+use libipld::cbor::{DagCbor, DagCborCodec};
+use libipld::prelude::{References, Store, StoreParams};
 use libipld::DagCbor;
+use libipld::{Cid, Ipld, Result};
 use std::cmp::PartialEq;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::iter::once;
 
-const BUCKET_SIZE: usize = 1;
+// TODO use const generics
 const MAP_LEN: usize = 32;
 
 // For testing need a hash with easy collisions
 fn hash(bytes: &[u8]) -> Vec<u8> {
-    use libipld::multihash::{Identity256, Sha2_256};
+    use libipld::multihash::{Hasher, Identity256, Sha2_256};
     if cfg!(test) {
         Identity256::digest(bytes).as_ref().to_vec()
     } else {
@@ -459,32 +452,112 @@ struct EntryWithHash<T: DagCbor> {
     hash: Vec<u8>,
 }
 
-pub struct Hamt<S: Store, T: DagCbor> {
-    bucket_size: usize,
-    nodes: IpldCache<S, DagCborCodec, Node<T>>,
-    root: Cid,
-}
-
-impl<S: Store, T: Clone + DagCbor + Send + Sync> Hamt<S, T>
+pub struct HamtConfig<S>
 where
     S: Store,
-    S::Params: StoreParams<Hashes = Code>,
     <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
     DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
-    T: Decode<DagCborCodec> + Encode<DagCborCodec> + Clone + Send + Sync,
-    Ipld: Decode<<S::Params as StoreParams>::Codecs>,
+    Ipld: References<<S::Params as StoreParams>::Codecs>,
 {
+    store: S,
+    cache_size: usize,
+    hash: <S::Params as StoreParams>::Hashes,
+    bucket_size: usize,
+}
+
+impl<S> HamtConfig<S>
+where
+    S: Store,
+    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
+    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
+    Ipld: References<<S::Params as StoreParams>::Codecs>,
+{
+    pub fn new(store: S, hash: <S::Params as StoreParams>::Hashes) -> Self {
+        Self {
+            store,
+            cache_size: 64,
+            hash,
+            bucket_size: 3,
+        }
+    }
+
+    pub fn set_cache_size(&mut self, cache_size: usize) {
+        self.cache_size = cache_size;
+    }
+
+    pub fn set_bucket_size(&mut self, bucket_size: usize) {
+        self.bucket_size = bucket_size;
+    }
+
+    fn bucket_size(&self) -> usize {
+        self.bucket_size
+    }
+
+    fn cache<T>(self) -> IpldCache<S, DagCborCodec, Node<T>>
+    where
+        T: DagCbor + Clone + Send + Sync,
+    {
+        IpldCache::new(self.store, DagCborCodec, self.hash, self.cache_size)
+    }
+}
+
+pub struct Hamt<S: Store, T: DagCbor> {
+    cache: IpldCache<S, DagCborCodec, Node<T>>,
+    root: Cid,
+    tmp: S::TempPin,
+    bucket_size: usize,
+}
+
+impl<S, T> Hamt<S, T>
+where
+    S: Store,
+    <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
+    DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
+    Ipld: References<<S::Params as StoreParams>::Codecs>,
+    T: DagCbor + Clone + Send + Sync,
+{
+    pub async fn new(config: HamtConfig<S>) -> Result<Self> {
+        let bucket_size = config.bucket_size();
+        let cache = config.cache();
+        let tmp = cache.temp_pin().await?;
+        let root = cache.insert(Node::new(), Some(&tmp)).await?;
+        Ok(Self {
+            cache,
+            root,
+            tmp,
+            bucket_size,
+        })
+    }
+
+    pub async fn open(config: HamtConfig<S>, root: Cid) -> Result<Self> {
+        let bucket_size = config.bucket_size();
+        let cache = config.cache();
+        let tmp = cache.temp_pin().await?;
+        // warm up the cache and make sure it's available
+        cache.get(&root, Some(&tmp)).await?;
+        Ok(Self {
+            cache,
+            root,
+            tmp,
+            bucket_size,
+        })
+    }
+
+    pub fn root(&self) -> &Cid {
+        &self.root
+    }
+
     pub async fn from<I: Into<Box<[u8]>>>(
-        store: S,
-        cache_size: usize,
+        config: HamtConfig<S>,
         btree: BTreeMap<I, T>,
     ) -> Result<Self> {
-        let mut hamt = Hamt::new(store, cache_size).await?;
+        let mut hamt = Hamt::new(config).await?;
         for (key, value) in btree {
             hamt.insert(key.into(), value).await?;
         }
         Ok(hamt)
     }
+
     // retrace the path traveled backwards, "bubbling up" the changes
     async fn bubble_up(&mut self, full_path: FullPath<T>) -> Result<Cid> {
         let FullPath {
@@ -492,41 +565,21 @@ where
             path,
         } = full_path;
         let path = path.into_iter().rev();
-        let mut cid = self.nodes.insert(block).await?;
+        let mut cid = self.cache.insert(block, Some(&self.tmp)).await?;
         for elt in path {
             let PathNode { idx, block: node } = elt;
             block = node;
             block.data[idx] = Element::HashNode(cid);
-            cid = self.nodes.insert(block).await?;
+            cid = self.cache.insert(block, Some(&self.tmp)).await?;
         }
         Ok(cid)
-    }
-    pub async fn new(store: S, cache_size: usize) -> Result<Self> {
-        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
-        let root = cache.insert(Node::new()).await?;
-        Ok(Self {
-            bucket_size: BUCKET_SIZE,
-            nodes: cache,
-            root,
-        })
-    }
-
-    pub async fn open(store: S, cache_size: usize, root: Cid) -> Result<Self> {
-        let cache = IpldCache::new(store, DagCborCodec, Code::Blake2b256, cache_size);
-        // warm up the cache and make sure it's available
-        cache.get(&root).await?;
-        Ok(Self {
-            bucket_size: 3,
-            nodes: cache,
-            root,
-        })
     }
 
     pub async fn get(&mut self, key: &[u8]) -> Result<Option<T>> {
         // TODO calculate correct hash
         let hash = hash(&key);
 
-        let mut current = self.nodes.get(&self.root).await?;
+        let mut current = self.cache.get(&self.root, Some(&self.tmp)).await?;
         validate_or_empty!(current);
         for index in hash.iter() {
             let bit = get_bit(&current.map, *index);
@@ -536,7 +589,7 @@ where
             let data_index = popcount(&current.map, *index) as usize;
             let Node { mut data, .. } = current;
             current = match data.remove(data_index) {
-                Element::HashNode(cid) => self.nodes.get(&cid).await?,
+                Element::HashNode(cid) => self.cache.get(&cid, Some(&self.tmp)).await?,
                 Element::Bucket(bucket) => {
                     for elt in bucket {
                         if &*elt.key == key {
@@ -551,16 +604,14 @@ where
         }
         Ok(None)
     }
-    pub fn root(&self) -> &Cid {
-        &self.root
-    }
+
     pub async fn insert(&mut self, key: Box<[u8]>, value: T) -> Result<()> {
         let mut queue = Queue::new();
         let hash_len = hash(&key).len();
         queue.add(Entry::new(key, value));
         let mut path = Path::new();
         // start from root going down
-        let mut current = self.nodes.get(&self.root).await?;
+        let mut current = self.cache.get(&self.root, Some(&self.tmp)).await?;
         for lvl in 0..hash_len {
             // validate_or_empty!(current);
             use InsertError::{Id, Overflow};
@@ -574,7 +625,7 @@ where
                 Err(Id(entry, cid, data_index)) => {
                     path.record(current, data_index);
                     queue.add(entry);
-                    current = self.nodes.get(&cid).await?;
+                    current = self.cache.get(&cid, Some(&self.tmp)).await?;
                     validate!(current);
                 }
                 Err(Overflow(overflow, data_index)) => {
@@ -588,13 +639,14 @@ where
         }
         todo!("Output error due to maximum collision depth reached");
     }
+
     pub async fn remove(&mut self, key: &[u8]) -> Result<()> {
         use RemoveError::Id;
         let hash = hash(key);
         let hash_len = hash.len();
         let mut path = Path::new();
         // start from root going down
-        let mut current = self.nodes.get(&self.root).await?;
+        let mut current = self.cache.get(&self.root, Some(&self.tmp)).await?;
         // validate_or_empty!(current);
         for lvl in 0..hash_len {
             match current.remove(lvl, key, &hash) {
@@ -607,12 +659,19 @@ where
                 }
                 Err(Id(cid, data_index)) => {
                     path.record(current, data_index);
-                    current = self.nodes.get(&cid).await?;
+                    current = self.cache.get(&cid, Some(&self.tmp)).await?;
                     validate!(current);
                 }
             }
         }
         todo!("Output error due to maximum collision depth reached");
+    }
+
+    pub async fn flush<A: AsRef<[u8]> + Send + Sync>(&mut self, alias: A) -> Result<()> {
+        self.cache.alias(alias, Some(self.root())).await?;
+        self.tmp = self.cache.temp_pin().await?;
+        self.cache.flush().await?;
+        Ok(())
     }
 }
 
@@ -621,6 +680,7 @@ mod tests {
     use super::*;
     use async_std::task;
     use libipld::mem::MemStore;
+    use libipld::multihash::Code;
     use libipld::store::DefaultParams;
     use proptest::prelude::*;
 
@@ -693,7 +753,9 @@ mod tests {
 
     async fn dummy_hamt() -> Hamt<MemStore<DefaultParams>, u8> {
         let store = MemStore::default();
-        Hamt::new(store, 12).await.unwrap()
+        let mut config = HamtConfig::new(store, Code::Blake2b256);
+        config.set_bucket_size(1);
+        Hamt::new(config).await.unwrap()
     }
 
     #[async_std::test]
@@ -777,9 +839,9 @@ mod tests {
         let mut node1 = dummy_node();
         let mut node2 = dummy_node();
         node1.set(0, Element::Bucket(vec![]));
-        let cid = hamt.nodes.insert(node1).await.unwrap();
+        let cid = hamt.cache.insert(node1, None).await.unwrap();
         node2.set(0, Element::HashNode(cid));
-        let cid = hamt.nodes.insert(node2).await.unwrap();
+        let cid = hamt.cache.insert(node2, None).await.unwrap();
         hamt.root = cid;
 
         let mut hamt_clone = dummy_hamt().await;
@@ -794,8 +856,8 @@ mod tests {
         hamt_clone.root = cid;
 
         assert_eq!(hamt.root, hamt_clone.root);
-        let block = hamt.nodes.get(&hamt.root).await.unwrap();
-        let block_compare = hamt_clone.nodes.get(&hamt_clone.root).await.unwrap();
+        let block = hamt.cache.get(&hamt.root, None).await.unwrap();
+        let block_compare = hamt_clone.cache.get(&hamt_clone.root, None).await.unwrap();
         assert_eq!(block, block_compare);
     }
 
@@ -826,7 +888,7 @@ mod tests {
         hamt.insert(entry.key, entry.value).await.unwrap();
         let mut node = Node::new();
         let _ = node.insert(0, Entry::new([0, 0, 0], 0).with_hash(), 3);
-        assert_eq!(node, hamt.nodes.get(&hamt.root).await.unwrap());
+        assert_eq!(node, hamt.cache.get(&hamt.root, None).await.unwrap());
         let mut hamt = dummy_hamt().await;
         let entry1 = Entry::new([0, 0, 0], 0);
         let entry2 = Entry::new([0, 0, 1], 0);
@@ -837,7 +899,7 @@ mod tests {
         for entry in entries {
             hamt.insert(entry.key, entry.value).await.unwrap();
         }
-        let mut node = hamt.nodes.get(&hamt.root).await.unwrap();
+        let mut node = hamt.cache.get(&hamt.root, None).await.unwrap();
         assert_eq!(
             &hamt.root.hash().digest(),
             &[
