@@ -8,6 +8,7 @@ description = "multiblock ipld collections"
 repository = "https://github.com/ipfs-rust/rust-ipld-collections"
 
 [dependencies]
+futures = "0.3.8"
 libipld = { version = "0.9.0", default-features = false, features = ["dag-cbor", "derive"] }
 multihash = { version = "0.13.2", default-features = false, features = ["sha2"] }
 

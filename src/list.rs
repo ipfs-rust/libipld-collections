@@ -10,6 +10,7 @@ use libipld::store::Store;
 use libipld::store::StoreParams;
 use libipld::DagCbor;
 
+#[derive(Clone, Debug)]
 pub struct ListConfig<S>
 where
     S: Store,
@@ -64,14 +65,15 @@ where
     }
 }
 
-pub struct List<S: Store, T: DagCbor> {
-    cache: IpldCache<S, DagCborCodec, Node<T>>,
+pub struct List<C, T: DagCbor> {
+    cache: C,
     root: Cid,
     tmp: S::TempPin,
 }
 
-impl<S, T> List<S, T>
+impl<C, T> List<C, T>
 where
+    C: Cache<S, DagCborCodec, T>,
     S: Store,
     <S::Params as StoreParams>::Codecs: Into<DagCborCodec>,
     DagCborCodec: Into<<S::Params as StoreParams>::Codecs>,
@@ -327,6 +329,7 @@ impl<T: DagCbor> Node<T> {
 }
 
 #[derive(Clone, Debug, DagCbor)]
+#[ipld(repr = "kinded")]
 enum Data<T: DagCbor> {
     Value(T),
     Link(Cid),
